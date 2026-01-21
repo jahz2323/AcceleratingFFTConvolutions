@@ -1,0 +1,13 @@
+#ignore builds
+cuda/build/*
+cmake-build-*
+torch/build/*
+models
+
+#ignore doxygen output
+cuda/html/*
+cuda/latex/*
+
+#ignore compile commands 
+cuda/compile_commands.json
+
