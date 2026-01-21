@@ -4,6 +4,13 @@ cmake-build-*
 torch/build/*
 models
 
+*.bin
+*.o
+*.obj
+*.exe
+*.dll
+
+
 #ignore doxygen output
 cuda/html/*
 cuda/latex/*
