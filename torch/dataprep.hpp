@@ -49,9 +49,12 @@ std::vector<std::tuple<std::string, int64_t>> Read_Dir(const std::string& path_d
    @author https://github.com/mhubii
  */
 class CIFAR : public torch::data::datasets::Dataset<CIFAR, torch::data::Example<>> {
-    private: 
-    std::vector<CIFARBuffer> data_entries;
-
+    
+    public:
+    enum class Mode{
+        TRAIN,
+        TEST
+    };
     // Helper function to read CIFAR binary file
     inline void load_binary_file(const std::string& path_dir){
         fs::path dir_path(path_dir);
@@ -82,35 +85,30 @@ class CIFAR : public torch::data::datasets::Dataset<CIFAR, torch::data::Example<
             else{
                 throw std::runtime_error("Error reading entry " + std::to_string(i)+ "Bytes read: " + std::to_string(file.gcount()));
             }
-            // Process buffer to extract image and label
-            data_entries.push_back(buffer);
+            // Comnvert Uint8_t data to torch::Tensor
+            torch::Tensor img_tensor = torch::from_blob(buffer.data, {3,32,32}, torch::kUInt8).to(torch::kFloat32).div(255.0).clone();
+            images_.push_back(img_tensor);
+            labels_.push_back(torch::tensor(static_cast<int64_t>(buffer.label), torch::kInt64));
         }
         file.close();
         
         // call save image function 
-        std::cout << "Successfully loaded the file" << dir_path.string() <<"With size of " << data_entries.size() << " entries from CIFAR binary file." << std::endl;
+        std::cout << "Successfully loaded the file" << dir_path.string() <<"With size of " << images_.size() << " entries from CIFAR binary file." << std::endl;
     }
+    //Constructer
+    explicit CIFAR(Mode mode) : mode_(mode) {};
 
-    public:
-
-    explicit CIFAR(std::string data_path) {
-        load_binary_file(data_path);
-    };
-    explicit CIFAR(std::vector<CIFARBuffer>& entries) : data_entries(entries) {}; // Alternative constructor
-    
     inline torch::data::Example<> get(size_t index) override {
-        CIFARBuffer& entry = data_entries[index];
-        // Convert CIFARBuffer to torch::Tensor
-        torch::Tensor img_tensor = torch::from_blob(entry.data, {3, 32,32}, torch::kUInt8).to(torch::kFloat32).div(255.0).clone();
-        int64_t label_value = static_cast<int64_t>(entry.label);
-        torch::Tensor label_tensor = torch::tensor(label_value, torch::kInt64);
-
-        return {img_tensor, label_tensor};
+        return {images_[index], labels_[index]};
     }
     // Override the size method to infer the size of the data set.
     inline torch::optional<size_t> size() const override {
-        return data_entries.size();
+        return images_.size();
     };
+    private: 
+    std::vector<torch::Tensor> images_; 
+    std::vector<torch::Tensor>  labels_;
+    Mode mode_;
 };
 
 /**
@@ -141,7 +139,7 @@ public:
 
 class EMNISTDataset : public torch::data::Dataset<EMNISTDataset> {
 private: 
-    torch::Tensor images, labels; 
+    torch::Tensor images_, labels_; 
 
     // helper function to flip endianness IDX are big endian 
     int32_t flip_endian(int32_t n){
@@ -184,7 +182,7 @@ public:
         std::vector<uint8_t> img_buffer(total_pixels);
         img_file.read(reinterpret_cast<char*>(img_buffer.data()), total_pixels);
         
-        images = torch::from_blob(img_buffer.data(), {num_items, 1, rows, cols}, torch::kUInt8)
+        images_ = torch::from_blob(img_buffer.data(), {num_items, 1, rows, cols}, torch::kUInt8)
                     .to(torch::kFloat32).div(255.0).clone();
 
         // 2. Read Labels
@@ -199,7 +197,7 @@ public:
         std::vector<uint8_t> lbl_buffer(num_items);
         lbl_file.read(reinterpret_cast<char*>(lbl_buffer.data()), num_items);
         
-        labels = torch::from_blob(lbl_buffer.data(), {num_items}, torch::kUInt8)
+        labels_ = torch::from_blob(lbl_buffer.data(), {num_items}, torch::kUInt8)
                     .to(torch::kInt64).clone();
 
         std::cout << "Successfully loaded " << num_items << " samples." << std::endl;
@@ -207,11 +205,11 @@ public:
 
     // Required by LibTorch
     torch::data::Example<> get(size_t index) override {
-        return {images[index], labels[index]};
+        return {images_[index], labels_[index]};
     }
 
     torch::optional<size_t> size() const override {
-        return images.size(0);
+        return images_.size(0);
     }
 };
 

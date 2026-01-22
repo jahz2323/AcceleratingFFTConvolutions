@@ -4,9 +4,11 @@
 #include <torch/library.h>
 #include <opencv2/opencv.hpp> 
 #include <ATen/cuda/CUDAContext.h>
+#include <time.h>
+#include <thread> // might parallelize data loading
+#include <chrono>
 #include <dlfcn.h>
 #include "dataprep.hpp" 
-
 #include "models/AlexNet.hpp"
 
  /**
@@ -88,25 +90,142 @@ void TestCustomOperator(){
     // std::cout << "Reduced sum: " << reduced_sum << std::endl;
 
 }
-
-void TestReadingCIFARBin(std::string root){
+/**
+    @brief Sequential data loading for CIFAR#
+    TODO: Parallelize data loading using multithreading 
+*/
+CIFAR TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
     std::string cifar_bin_path = "data/cifar/cifar-10-batches-bin/data_batch_1.bin";
     std::string full_path = root + "/" + cifar_bin_path;
-    CIFAR dataset(full_path);
-    std::cout << "CIFAR Dataset size: " << dataset.size().value() << std::endl;
-    auto sample = dataset.get(0);
-    std::cout << "First sample image tensor size: " << sample.data.sizes() << std::endl;
-    std::cout << "First sample label tensor: " << sample.target << std::endl;
+    CIFAR dataset(mode);
+    
+    // dataset.load_binary_file(full_path);
+    // torch::data::Example<> example = dataset.get(0); // 2 tensors: image and label
+    // // print out size of dataset and example image and label in tensor form
+    // std::cout << "CIFAR Dataset size: " << dataset.size().value() << std::endl;
+    // std::cout << "Example image tensor size: " << example.data.sizes() << std::endl;
+    // std::cout << "Example label tensor value: " << example.target << std::endl;
+    
+    // For each bin file in /train - read in and save to dataset object 
+
+    //start time 
+    clock_t start_time = clock();
+    for (const auto &entry: fs::directory_iterator(root + "/data/cifar/cifar-10-batches-bin/")){
+        // if mode is train - only read train files
+        if (mode == CIFAR::Mode::TRAIN && entry.path().string().find("data_batch") != std::string::npos){
+            std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
+            dataset.load_binary_file(entry.path().string());
+        }
+        // if mode is test - only read test file
+        else if (mode == CIFAR::Mode::TEST && entry.path().string().find("test_batch") != std::string::npos){
+            std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
+            dataset.load_binary_file(entry.path().string());
+        }
+    }
+
+    // end time
+    clock_t end_time = clock();
+    double elapsed_time = double(end_time - start_time) / CLOCKS_PER_SEC;
+    std::cout << "Time taken to load all CIFAR binary files: " << elapsed_time << " seconds" << std::endl;
+    /**
+     @note 5 seconds in total to load all 5 CIFAR bin files (~10,000 images each) on CPU
+    */
+    // check total size of dataset 
+    std::cout << "Total CIFAR Dataset size after loading all bin files: " << dataset.size().value() << std::endl;
+    
+    return dataset; 
 }
+
 
 /* Testing Dataset loading */
 int main(){
-
+    const size_t BatchSize = 128;
+    const size_t Epochs = 100;
+    const size_t numworkers = 4; // number of data loading workers
+    const float learning_rate = 0.01;
+    const float momentum = 0.9;
+    
     std::filesystem::path root = std::filesystem::current_path().parent_path().parent_path().parent_path();
 
     torch::Device device(torch::kCUDA);
     auto model = std::make_shared<AlexNet>();
+   
+    auto train_dataset = (TestReadingCIFARBin(root.string(), CIFAR::Mode::TRAIN)).map(torch::data::transforms::Stack<>()); // no normalization steps atm
+    auto test_dataset = (TestReadingCIFARBin(root.string(), CIFAR::Mode::TEST)).map(torch::data::transforms::Stack<>()); // no normalization steps atm
+
+    auto num_train_samples = train_dataset.size().value();
+    std::cout << "Number of training samples: " << num_train_samples << std::endl;
+    auto num_test_samples = test_dataset.size().value();
+    std::cout << "Number of test samples: " << num_test_samples << std::endl;
     
-    TestReadingCIFARBin(root.string());
+    auto dl = torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
+        std::move(train_dataset), torch::data::DataLoaderOptions().batch_size(BatchSize).workers(numworkers));
+    auto tl = torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
+        std::move(test_dataset), torch::data::DataLoaderOptions().batch_size(BatchSize).workers(numworkers));
+    // Optimizer
+    torch::optim::SGD optimizer(model->parameters(), torch::optim::SGDOptions(learning_rate).momentum(momentum));
+    model->to(device);
+
+    
+    // Training loop
+    for (size_t epoch = 1; epoch <= Epochs; ++epoch){
+        size_t batch_index = 0;
+        double running_loss = 0.0;
+        size_t correct = 0;
+        auto start = std::chrono::high_resolution_clock::now();
+        for(auto& batch: *dl){
+            auto data = batch.data.to(device);
+            auto targets = batch.target.to(device);
+            // Forward pass
+            auto output = model->forward(data);
+
+            // Compute loss
+            auto loss = torch::nn::functional::cross_entropy(output, targets);
+
+            // update running loss
+            running_loss += loss.item<double>() * data.size(0);
+
+            // calculate prediction 
+            auto pred = output.argmax(1);
+
+            //update number of correct predictions
+            correct += pred.eq(targets).sum().item<int64_t>();
+
+            // Backward pass and optimize
+            optimizer.zero_grad();
+            loss.backward();
+            optimizer.step();
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> epoch_duration = end - start;
+        std::cout << "Epoch " << epoch << " completed in " << epoch_duration.count() << " seconds." << std::endl;
+        double throughput = static_cast<double>(num_train_samples) / epoch_duration.count();
+        std::cout << "Throughput: " << throughput << " samples/second" << std::endl;
+        auto sample_mean_loss = running_loss / num_train_samples;
+        auto accuracy = static_cast<double>(correct) / num_train_samples * 100.0;
+        std::cout << "Epoch: " << epoch << " | Average Loss: " << sample_mean_loss << " | Accuracy: " << accuracy << "%" << std::endl;
+    }
+    //Training finished 
+    std::cout << "Training finished. Testing model..." << std::endl;
+    //Testing model
+    model->eval();
+    size_t correct = 0;
+
+    for (auto& batch: *tl){
+        auto data = batch.data.to(device);
+        auto targets = batch.target.to(device);
+
+        auto output = model->forward(data);
+
+        auto loss = torch::nn::functional::cross_entropy(output, targets);
+        auto pred = output.argmax(1);
+        correct += pred.eq(targets).sum().item<int64_t>();
+    }
+    std::cout << "Test Accuracy: " << static_cast<double>(correct) / num_test_samples * 100.0 << "%" << std::endl;
+
+    auto test_accuracy = static_cast<double>(correct) / num_test_samples * 100.0;
+    auto test_sample_mean_loss = static_cast<double>(correct) / num_test_samples;
+
+    std::cout << "Test completed. Accuracy: " << test_accuracy << "%, Average Loss: " << test_sample_mean_loss << std::endl;
     return 0;
 }
