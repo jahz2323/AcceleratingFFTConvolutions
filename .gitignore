@@ -2,7 +2,7 @@
 cuda/build/*
 cmake-build-*
 torch/build/*
-models
+
 
 *.bin
 *.o

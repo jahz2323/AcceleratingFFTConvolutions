@@ -1,6 +1,4 @@
 #pragma once
-#ifndef DATAPREP_HPP
-#define DATAPREP_HPP
 #include <torch/torch.h>
 #include <torch/script.h>
 #include <opencv2/opencv.hpp> 
@@ -43,6 +41,11 @@ struct CIFARBuffer{
     @returns vector<tuple<string, int64_t>>
 */
 std::vector<std::tuple<std::string, int64_t>> Read_Dir(const std::string& path_dir);
+
+namespace DataHandling { 
+    torch::Tensor LoadImageToTensor(const std::string& img_path, torch::Device device);
+    void displayImage(cv::Mat img, const std::string& window_name, int desired_width = 800, int desired_height = 600, bool keep_aspect_ratio = true);
+}
 
 /**
  * @brief Generic Dataset class template
@@ -142,13 +145,13 @@ private:
     torch::Tensor images_, labels_; 
 
     // helper function to flip endianness IDX are big endian 
-    int32_t flip_endian(int32_t n){
+    inline int32_t flip_endian(int32_t n){
         unsigned char ch1, ch2, ch3, ch4; 
         ch1 = n & 255; ch2 = (n >> 8) & 255; ch3 = (n >>16) & 255; ch4 = (n >> 24) & 255 ; 
         return ((int32_t)ch1 <<24 ) + ((int32_t)ch2 << 16) + ((int32_t)ch3 << 8) + ch4; 
     }
 
-    int32_t read_int(std::ifstream& file){
+    inline int32_t read_int(std::ifstream& file){
         int32_t val = 0;
         file.read(reinterpret_cast<char*>(&val),4); 
         // ntohl converts 'network' (big-endian) to 'host' (little-endian)
@@ -156,63 +159,13 @@ private:
     }
 
 public: 
-    EMNISTDataset(const std::string& image_path, const std::string& label_path) {
-        // 1. Read Images
-        std::ifstream img_file(image_path, std::ios::binary);
-        if(!img_file.is_open()){
-            throw std::runtime_error("could not open image file at: " + image_path);
-        }
-
-        // 2. read indexes 
-        int32_t magic_number = read_int(img_file);
-        int32_t num_items = read_int(img_file); 
-        int32_t rows = read_int(img_file);
-        int32_t cols = read_int(img_file); 
-
-        // Debug output to verify validitiy of numbers 
-        std::cout << "Data check: Magic=" << magic_number << " Items=" << num_items 
-                  << " Dim=" << rows << "x" << cols << std::endl;
-
-        if (num_items <= 0 || rows <= 0 || cols <= 0) {
-            throw std::runtime_error("Invalid IDX header values. Check if file is unzipped.");
-        }
-
-        // The overflow happened here: (num_items * rows * cols)
-        size_t total_pixels = static_cast<size_t>(num_items) * rows * cols;
-        std::vector<uint8_t> img_buffer(total_pixels);
-        img_file.read(reinterpret_cast<char*>(img_buffer.data()), total_pixels);
-        
-        images_ = torch::from_blob(img_buffer.data(), {num_items, 1, rows, cols}, torch::kUInt8)
-                    .to(torch::kFloat32).div(255.0).clone();
-
-        // 2. Read Labels
-        std::ifstream lbl_file(label_path, std::ios::binary);
-        if (!lbl_file.is_open()) {
-            throw std::runtime_error("Could not open label file: " + label_path);
-        }
-
-        magic_number = read_int(lbl_file);
-        num_items = read_int(lbl_file);
-
-        std::vector<uint8_t> lbl_buffer(num_items);
-        lbl_file.read(reinterpret_cast<char*>(lbl_buffer.data()), num_items);
-        
-        labels_ = torch::from_blob(lbl_buffer.data(), {num_items}, torch::kUInt8)
-                    .to(torch::kInt64).clone();
-
-        std::cout << "Successfully loaded " << num_items << " samples." << std::endl;
-    }
-
+    EMNISTDataset(const std::string& image_path, const std::string& label_path);
     // Required by LibTorch
-    torch::data::Example<> get(size_t index) override {
+    inline torch::data::Example<> get(size_t index) override {
         return {images_[index], labels_[index]};
     }
 
-    torch::optional<size_t> size() const override {
+    inline torch::optional<size_t> size() const override {
         return images_.size(0);
     }
 };
-
-
-
-#endif
