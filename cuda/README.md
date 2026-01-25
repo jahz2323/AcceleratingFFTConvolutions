@@ -5,3 +5,4 @@ sudo apt-get install python3-dev python3-numpy
 
 !GLIBCXX_3.4.32 not found 
 update conda
+

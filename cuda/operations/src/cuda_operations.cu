@@ -22,6 +22,9 @@
 
 /**
     * @brief 2D Convolution CUDA kernel
+    @NOTE: 
+    had an issue with mapping indexes from 1D to 2D in the kernel, 
+    Change to a cross-correlation operation [n+k] instead of convolution [n-k] to fix it.
 */
 __global__ void cuda_operations::_2DConv(int in_width, int in_height, int filter_width, int filter_height, int stride, int padding,
                            void* input, void* filters, void* output)                   
@@ -38,8 +41,8 @@ __global__ void cuda_operations::_2DConv(int in_width, int in_height, int filter
     // dow (row,col)
     for (int k = 0; k < filter_height; k++) {
         for (int l = 0; l < filter_width; l++) {
-            int n_start_pos = idy * stride - k + padding;
-            int m_start_pos = idx * stride - l + padding;
+            int n_start_pos = idy * stride + k - padding;
+            int m_start_pos = idx * stride + l - padding;
             if (n_start_pos >= 0 && n_start_pos < in_height &&
                 m_start_pos >= 0 && m_start_pos < in_width) {
                 float x_value = static_cast<float*>(input)[n_start_pos * in_width + m_start_pos];
@@ -89,7 +92,7 @@ __global__ void cuda_operations::elementWiseMultiplyComplex(int width, int heigh
 
     int index = idy * width + idx;
     cuComplex input_val = (input)[index];
-    cuComplex filter_val = (filters)[index];
+    cuComplex filter_val = cuConjf((filters)[index]);
     cuComplex product = cuCmulf(input_val, filter_val);
     (output)[index] = product;
 }
@@ -198,8 +201,13 @@ __global__ void cuda_operations::_1D_IFFT(int width, int height, cuComplex* inpu
         }
     }
     // Normalize the result
+
+   
     for(int i = 0; i < width; i++){
-        row_data[i] = make_cuComplex(row_data[i].x / width, row_data[i].y / width);
+        row_data[i] = make_cuComplex(row_data[i].x, row_data[i].y);
+        //DEBUG:
+        // row_data[i].x = 1.0f; 
+        // row_data[i].y = 1.0f;
     }
 }
 
@@ -216,46 +224,51 @@ __global__ void cuda_operations::_1D_IFFT(int width, int height, cuComplex* inpu
     2. Compute 2D FFT of filter
     3. Element-wise multiply the two FFT results
     4. Compute inverse 2D FFT of the product to get convolved output
-    @param in_width: Width of the input signal int
-    @param in_height: Height of the input signal int
-    @param filter_width: Width of the filter int
-    @param filter_height: Height of the filter int
+    @param w: Width of the input signal int
+    @param h: Height of the input signal int
+    @param fw: Width of the filter int
+    @param fh: Height of the filter int
     @param input: Pointer to input signal (Complex numbers)
     @param filters: Pointer to filter signal (Complex numbers)
     @param output: Pointer to output signal (Float numbers)
 */
-void cuda_operations::_2D_FFTConv(int in_width, int in_height, int filter_width, int filter_height,
+void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
                            cuComplex* input, cuComplex* filters, cuComplex* output) {
     //Implementation of 2D FFT Convolution kernel
     dim3 block(16, 16);
-    dim3 grid((in_width + 15) / 16, (in_height + 15) / 16);
+    dim3 grid((w + 15) / 16, (h + 15) / 16);
+    
+    cuComplex* d_temp;
+    cudaMalloc(&d_temp, w * h * sizeof(cuComplex));
 
     // Steps:
     // 1. Compute 2D FFT of input
-    utils::bitreversal<<<grid, block>>>(in_width, in_height, input);
-    _1D_FFT<<<grid, block>>>(in_width, in_height, input, input);
+    utils::bitreversal<<<grid, block>>>(w, h, input);
+    _1D_FFT<<<grid, block>>>(w, h, input, input);
     
     //get the transpose of the input for column-wise FFT
-    utils::naivetranspose<<<grid, block>>>(in_width, in_height, input, input);
+    utils::naivetranspose<<<grid, block>>>(w, h, input, d_temp);
+    cudaMemcpy(input, d_temp, w * h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // perform row-wise FFT again to complete 2D FFT
-    utils::bitreversal<<<grid, block>>>(in_height, in_width, input);
-    _1D_FFT<<<grid, block>>>(in_height, in_width, input, input);
+    utils::bitreversal<<<grid, block>>>(h, w, input);
+    _1D_FFT<<<grid, block>>>(h, w, input, input);
 
     // 2. Compute 2D FFT of filter
-    utils::bitreversal<<<grid, block>>>(filter_width, filter_height, filters);
-    _1D_FFT<<<grid, block>>>(filter_width, filter_height, filters, filters);
+    utils::bitreversal<<<grid, block>>>(fw, fh, filters);
+    _1D_FFT<<<grid, block>>>(fw, fh, filters, filters);
     
     //get the transpose of the filter for column-wise FFT
-    utils::naivetranspose<<<grid, block>>>(filter_width, filter_height, filters, filters);
+    utils::naivetranspose<<<grid, block>>>(fw, fh, filters, d_temp);
+    cudaMemcpy(filters, d_temp, fw * fh * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // perform row-wise FFT again to complete 2D FFT
-    utils::bitreversal<<<grid, block>>>(filter_height, filter_width, filters);
-    _1D_FFT<<<grid, block>>>(filter_height, filter_width, filters, filters);
+    utils::bitreversal<<<grid, block>>>(fh, fw, filters);
+    _1D_FFT<<<grid, block>>>(fh, fw, filters, filters);
     
     // 3. Element-wise multiply the two FFT results 
-    int output_width = in_width; // for same conv - Basic FFTConv 
-    int output_height = in_height;
+    int output_width = w; // for same conv - Basic FFTConv 
+    int output_height = h;
 
     elementWiseMultiplyComplex<<<grid,block>>>(output_width, output_height, input, filters, output);
 
@@ -264,7 +277,8 @@ void cuda_operations::_2D_FFTConv(int in_width, int in_height, int filter_width,
     _1D_IFFT<<<grid, block>>>(output_width, output_height, output, output);
     
     // get the transpose of the output for column-wise IFFT
-    utils::naivetranspose<<<grid, block>>>(output_width, output_height, output, output);
+    utils::naivetranspose<<<grid, block>>>(output_width, output_height, output, d_temp);
+    cudaMemcpy(output, d_temp, output_width * output_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // perform row-wise IFFT again to complete 2D IFFT
     utils::bitreversal<<<grid, block>>>(output_height, output_width, output);

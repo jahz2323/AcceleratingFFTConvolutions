@@ -60,8 +60,9 @@ __global__ void utils::complex2float(int width, int height, cuComplex* input, fl
     if(idx >= width || idy >= height) return;
 
     int index = idy * width + idx;
+    float scale = 1.0f / (width * height);
     cuComplex cvalue = (input)[index];
-    static_cast<float*>(output)[index] = cuCrealf(cvalue);
+    static_cast<float*>(output)[index] = cuCrealf(cvalue) * scale;
 }
 
 __global__ void utils::copy(float* odata, float* idata){
@@ -80,43 +81,18 @@ __global__ void utils::copyComplex(cuComplex* odata, cuComplex* idata){
     odata[index] = idata[index];
 }
 
-// __device__ int utils::nextPowerOfTwo(int n){
-//     int count = 0;
-//     // First n in the below condition is for the case where n is 0
-//     if (n && !(n & (n - 1)))
-//         return n;
+int utils::nextPowerOfTwo(int n){
+    int count = 0;
+    // First n in the below condition is for the case where n is 0
+    if (n && !(n & (n - 1)))
+        return n;
 
-//     while( n != 0){
-//         n >>= 1;
-//         count += 1;
-//     }
-//     return 1 << count;
-// }
-
-// __global__ void utils::zeroPad2D(int in_width, int in_height, int out_width, int out_height, void* input, void* output){
-//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-//     int idy = blockIdx.y * blockDim.y + threadIdx.y;
-//     if(idx >= out_width || idy >= out_height) return;
-
-//     int out_index = idy * out_width + idx;
-//     if(idx < in_width && idy < in_height){
-//         int in_index = idy * in_width + idx;
-//         static_cast<float*>(output)[out_index] = static_cast<float*>(input)[in_index];
-//     } else {
-//         static_cast<float*>(output)[out_index] = 0.0f;
-//     }
-// }
-
-// __global__ void utils::zeroPad1D(int in_width, int out_width, void* input, void* output){
-//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-//     if(idx >= out_width) return;
-
-//     if(idx < in_width){
-//         static_cast<float*>(output)[idx] = static_cast<float*>(input)[idx];
-//     } else {
-//         static_cast<float*>(output)[idx] = 0.0f;
-//     }
-// }
+    while( n != 0){
+        n >>= 1;
+        count += 1;
+    }
+    return 1 << count;
+}
 
 __global__ void utils::naivetranspose(int width, int height, cuComplex* input, cuComplex* output){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;

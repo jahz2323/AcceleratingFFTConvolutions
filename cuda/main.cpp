@@ -12,7 +12,7 @@ int main(int argc, char* argv[]){
     if(argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <mode> [additional arguments]" << std::endl;
         std::cerr << "Modes:" << std::endl;
-        std::cerr << "  test_convolution" << std::endl;
+        std::cerr << "  test_conv" << std::endl;
         std::cerr << "  test_sfft" << std::endl;
         std::cerr << "  test_custom_ops" << std::endl;
         return 1;
