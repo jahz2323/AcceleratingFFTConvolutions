@@ -10,6 +10,7 @@ set(CMAKE_CUDA_ARCHITECTURES 89)
 
 project(Cuda_app LANGUAGES CXX CUDA)
 
+find_package(CUDAToolkit REQUIRED)
 find_package(Python3 COMPONENTS Development NumPy REQUIRED)
 find_package(Torch REQUIRED)
 find_package(OpenCV REQUIRED)

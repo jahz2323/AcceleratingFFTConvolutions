@@ -2,85 +2,6 @@
 
 
 
-/**
-    @author https://github.com/dbids-EC527/fft/blob/master/base_code/fft_2d.c
-*/
-__global__ void utils::bitreversal(int n, void* storage){
-    int i, j;
-    for (i=1, j=0; i < n; i++){
-        int bit = n >>1; 
-        for(; j & bit; bit>>=1){
-            j ^= bit;
-        }
-        j ^= bit;
-        cuComplex temp;
-        if(i < j){
-            // swap
-            temp = static_cast<cuComplex*>(storage)[i];
-            static_cast<cuComplex*>(storage)[i] = static_cast<cuComplex*>(storage)[j];
-            static_cast<cuComplex*>(storage)[j] = temp;
-        }
-    } 
-}
-
-__global__ void utils::bitreversal(int width, int height, cuComplex* data){
-    auto idx  = blockIdx.x * blockDim.x + threadIdx.x;
-    auto idy  = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (idx < width && idy < height){
-        unsigned int rev_n = 0; 
-        int temp_x = idx;
-        int bits = static_cast<int>(log2f((float)width));
-        for(int i = 0; i < bits; i++){
-            rev_n = (rev_n << 1) | (temp_x & 1);
-            temp_x >>= 1;
-        }
-        if  (rev_n > idx){
-            // swap
-            cuComplex temp = data[idy * width + idx];
-            data[idy * width + idx] = data[idy * width + rev_n];
-            data[idy * width + rev_n] = temp;
-        }
-    }
-}
-
-__global__ void utils::float2complex(int width, int height, float* input, cuComplex* output){
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    if(idx >= width || idy >= height) return;
-
-    int index = idy * width + idx;
-    float real_value = static_cast<float*>(input)[index];
-    (output)[index] = make_cuComplex(real_value, 0.0f);
-}
-
-__global__ void utils::complex2float(int width, int height, cuComplex* input, float* output){
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    if(idx >= width || idy >= height) return;
-
-    int index = idy * width + idx;
-    float scale = 1.0f / (width * height);
-    cuComplex cvalue = (input)[index];
-    static_cast<float*>(output)[index] = cuCrealf(cvalue) * scale;
-}
-
-__global__ void utils::copy(float* odata, float* idata){
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    int width = gridDim.x * blockDim.x;
-    int index = idy * width + idx;
-    odata[index] = idata[index];
-}
-
-__global__ void utils::copyComplex(cuComplex* odata, cuComplex* idata){
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    int width = gridDim.x * blockDim.x;
-    int index = idy * width + idx;
-    odata[index] = idata[index];
-}
-
 int utils::nextPowerOfTwo(int n){
     int count = 0;
     // First n in the below condition is for the case where n is 0
@@ -94,12 +15,70 @@ int utils::nextPowerOfTwo(int n){
     return 1 << count;
 }
 
-__global__ void utils::naivetranspose(int width, int height, cuComplex* input, cuComplex* output){
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    if(idx >= width || idy >= height) return;
 
-    int in_index = idy * width + idx;
-    int out_index = idx * height + idy;
-    output[out_index] = input[in_index];
+
+/**
+    @brief Helper function to write a vector of strings to a CSV file.
+    @param path_to_file_with_filename The full path to the CSV file including the filename.
+    @param content A vector of strings, each representing a line to be written to the CSV
+
+    if csv is not present, create a new file.
+*/
+void utils::writeCSV(
+    const std::string& path_to_file_with_filename, 
+    const std::vector<std::string> &content
+){
+    std::ofstream file_to_write_to; 
+    file_to_write_to.open(path_to_file_with_filename, std::ios::out | std::ios::app);
+    if(!file_to_write_to.is_open()){
+        throw std::runtime_error("Failed to open file: " + path_to_file_with_filename);
+        return;
+    }
+    int col_count = 6;
+    // check if header is already present
+    file_to_write_to.seekp(0, std::ios::end);
+    if(file_to_write_to.tellp() != 0){
+        // move pointer to next row 
+        file_to_write_to << "\n";
+    }
+    else{
+        file_to_write_to << " Conv_Method , Input_Dimensions , Filter_Dimensions , Stride , Padding , Time_ms \n";
+    }
+
+    // write content
+    // file is not empty and skip first row 
+    int inital_col = 0;
+    for(const auto& line : content){
+        if(inital_col >= col_count){
+            file_to_write_to << "\n";
+            inital_col = 0;
+        }
+        ++inital_col; // start at 1
+        file_to_write_to << line << ","; 
+    }
+    
+   
+    std::cout << "Data written to CSV file: " << path_to_file_with_filename << std::endl;
+    file_to_write_to.close();
 }
+
+void utils::checkcuComplexArray(cuComplex* data, int width, int height, const std::string& array_name){
+    std::vector<cuComplex> host_data(width * height);
+    cudaMemcpy(host_data.data(), data, width * height * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    std::cout << "Contents of " << array_name << " :" << std::endl;
+    
+    // check dims 
+    std::cout << "Dimensions: " << height << " x " << width << std::endl; 
+    delete[] host_data.data();
+}
+
+void utils::printConvResult(std::vector<float>& output, int out_width, int out_height){
+    std::cout << "Convolution Result: " << std::endl;
+    for(int i = 0; i < out_height; ++i){
+        for(int j = 0; j < out_width; ++j){
+            std::cout << output[i * out_width + j] << " ";
+        }
+        std::cout << std::endl;
+    }
+}
+

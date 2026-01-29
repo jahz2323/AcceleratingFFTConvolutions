@@ -26,7 +26,6 @@ add_subdirectory(utils)
 # 4. Define your executable (include both .cpp and .cu files here)
 add_executable(torchapp main.cpp)
 
-# 5. Link the LibTorch libraries
 target_link_libraries(torchapp PRIVATE utils)
 
 # 6. Set C++ and CUDA standards

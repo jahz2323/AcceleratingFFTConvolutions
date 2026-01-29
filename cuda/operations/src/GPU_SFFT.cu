@@ -1,11 +1,4 @@
-#include <cuda_runtime.h>
-#include <cufft.h>
-#include <curand.h>
-#include <iostream>
-#include <vector>
-#include <complex>
-#include <filesystem>
-#include "opencv.hpp"
+#include "GPU_SFFT.cuh"
 
 /**
  * @author Jahziel Belmonte
@@ -15,172 +8,6 @@
  * @file FFT_Algorithms.cu 
 */
 
-#define INPUT_SIZE_CHECK  (1 << 27) // 2^27
-
- /**
- * @brief Display image using OpenCV
- * @param img: pointer to cv::Mat image to display
- * @param window_name: name of the display window
- * @param desired_width: desired width of the display window
- * @param desired_height: desired height of the display window
- * @param keep_aspect_ratio: whether to keep the aspect ratio of the image
- * @return void
-  */
-
-void displayImage(cv::Mat* img, const std::string& window_name, int desired_width = 800, int desired_height = 600, bool keep_aspect_ratio = true) {
-    // Create a window for display.
-    cv::namedWindow(window_name, cv::WINDOW_NORMAL);
-
-    // resize window
-    if (keep_aspect_ratio) {
-        int original_width = img->cols;
-        int original_height = img->rows;
-        float aspect_ratio = static_cast<float>(original_width) / static_cast<float>(original_height);
-
-        if (desired_width / aspect_ratio <= desired_height) {
-            desired_height = static_cast<int>(desired_width / aspect_ratio);
-        } else {
-            desired_width = static_cast<int>(desired_height * aspect_ratio);
-        }
-    }
-    cv::resizeWindow(window_name, desired_width, desired_height);
-
-    cv::imshow(window_name, *img);
-    int k = cv::waitKey(0);
-    if (k == 's') {
-        cv::imwrite(window_name + ".png", *img);
-    }
-}
-
-
-/**
- * @brief Secondary Permutation Function 
- * GPU Kernel to perform secondary permutation for 2D sparse FFT
- * Signal is flattened to 1D 
- * @param d_bins: pointer to device 2d bins
- * @param d_x: pointer to device input 2d signal
- * @param n: size of the input signal
- * @param B: number of bins
- * @param d_hsigma: pointer to device hash parameters
- * @param d_filter: pointer to device 2d filters
- * @param fs: filter size
- */
-__global__ void PFKernel2D(float* d_bins, float* d_x, int n, int B, float* d_hsigma, float* d_filter, int fs){
-    // Get thread indices
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;  // get global thread index
-    int idy = threadIdx.y + blockIdx.y * blockDim.y;  // get global thread index
-    
-    /* While threads are within filter size boundary */
-    if(idx < fs && idy < fs){
-        int bins_index = ((idx * B + idy) % B); 
-        d_bins[bins_index] += d_x[((idx*n + idy * d_hsigma[idx*n + idy]) % n)] * d_filter[idx * fs + idy];
-    }
-}
-
-/**
- * @brief Primary Permutation Function
- * GPU Kernel to perform spectrum permutation for 2D sparse FFT
- * @param d_bins: pointer to device 2d bins
- * @param d_x: pointer to device input 2d signal
- * @param d_filter: pointer to device 2d ilter
- * @param N: size of the input signal
- * @param B: number of bins
- * @param d_hsigma: pointer to device hash parameters
- * @param T: number of tiles for filter vector
- * @param R: R remaining elements to be permuted into bins 
- * 
- */
-__global__ void PFTkernel2D(float* d_bins, float* d_x, float* d_filter, int N, int B, float* d_hsigma, int T, int R){
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;  // get global thread index
-    int idy = threadIdx.y + blockIdx.y * blockDim.y;  // get global thread index
-    /* Apply Permutation */ 
-    /*Check if within bounds*/
-    if((idx < N || idx == B) && (idy < N || idy == B)){
-        /*if thread is less than B start placing frequencies to bins*/
-        if(idx < B && idy < B){
-            for(int j =0; j<T; j++){
-                for(int k =0; k<T; k++){
-                    int x_index = idx + j * B; // calculate x index 
-                    int y_index = idy + k * B; // calculate y index
-
-                    /* calculate index address of hash */
-                    int sample_index_x = ((x_index * d_hsigma) % N); 
-                    int sample_index_y = ((y_index * d_hsigma) % N);
-
-                    /* apply gaussian or defined filter and place value into bin */
-                    d_bins[x_index * N + y_index] += d_x[((sample_index_x) * N + (sample_index_y))] * d_filter[((sample_index_x) * N + (sample_index_y))];
-                }
-            }
-        }
-        if (idx == B || idy == B){
-            for (int j =0; j< T; j++){
-                int x_index = idx + j * T; 
-                int y_index = idy + j * T;
-
-                d_bins[x_index * N + y_index] += d_x[((x_index * d_hsigma) % N * N + (y_index * d_hsigma) % N)] * d_filter[((x_index * d_hsigma) % N * N + (y_index * d_hsigma) % N)];
-            }
-        } 
-    }
-}
-
-/**
- * @brief GPU Kernel to compute frequency and time components of input signal
- * preparing filter window for sublinear hashing of signal
- * Gaussian or Dolph-Chebyshev Filter used gather time and frequency components
- * G(x,y) =  1/sqrt(2pi*sigma^2) * exp(-x^2  +  y^2 / 2sigma^2)
- * G(f) =  exp(-2pi^2*sigma^2 * (f^2 + g^2))
- * @param N: size of the input signal
- */
-__global__ void FilterComponentsKernel(int N, float* filter_freq, float* filter_time, float sigma, float PI = 3.14159265358979323846f){
-     // Get thread indices
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;  // get global thread index 
-    int idy = threadIdx.y + blockIdx.y * blockDim.y;  // get global thread index
-
-    if (idx < N && idy < N){
-        // Frequency component 
-        float f = idx; 
-        float g = idy;
-        int filter_time_index = idx * N + idy;
-        int filter_freq_index = idx * N + idy;
-        // place into time signal vector  g(x,y)
-        filter_time[filter_time_index] = (1.0f / sqrtf(2.0f * PI * sigma * sigma)) * exp(-(f*f + g*g) / 2.0f * sigma * sigma);
-
-        // place into freq signal vectors 
-        filter_freq[filter_freq_index] = exp(-2.0f * PI * PI * sigma * sigma) * (exp(-(f*f + g*g)));
-    }
-}
-/**
- * @brief GPU Host Function to call GPU Permutation and Filtering Kernels
- */
-__host__ void PermutationFilterGPU(dim3 numBlocks, dim3 threads_per_block, float* dx, int B, float* d_filter, int fs, float* d_bins, float* d_hsigma){
-    /* Calculate T number of tiles for filter vector and r remaining elemnts of the filter */
-    int t = fs / B; 
-    int r = fs % B;
-    
-    /* Define GPU kernel launch parameters */
-
-    /* GPU-SFFT if input size is < 2^27 call PFTKern ELSE call PFKern */
-    if (fs <= INPUT_SIZE_CHECK) {
-        PFTkernel2D<<<numBlocks, threads_per_block>>>( d_bins, dx, d_filter, fs, B, d_hsigma, t, r);
-
-    }
-    else{
-        PFKernel2D<<<numBlocks, threads_per_block>>>( d_bins, dx, fs, B, d_hsigma, d_filter, fs);
-    }
-}
-
-/**
- * @brief Outer Loop for 2D Sparse FFT
- * @param input_signal: pointer to host input 2d signal
- */
-#define LOOP_ITERATIONS 48 // l
-#define k 1024 // sparsity
-#define B k // Number of bins
-#define Bt 2*B // Bins threshold
-#define W  32 // window size 
-#define L 32 // Hashing Rounds - 
-#define Lc  8 // subset of rounds to find indices of significant frequencies
-#define Ll 8 // Conditional check to determine to run Reverse Hashing function
 
 __host__ void OuterLoop2D(float* input_signal, int N){
     /* Define filter size */
@@ -252,6 +79,136 @@ __host__ void OuterLoop2D(float* input_signal, int N){
     cudaFree(d_filter_time);
 
 }
+
+// /**
+//  * @brief Secondary Permutation Function 
+//  * GPU Kernel to perform secondary permutation for 2D sparse FFT
+//  * Signal is flattened to 1D 
+//  * @param d_bins: pointer to device 2d bins
+//  * @param d_x: pointer to device input 2d signal
+//  * @param n: size of the input signal
+//  * @param B: number of bins
+//  * @param d_hsigma: pointer to device hash parameters
+//  * @param d_filter: pointer to device 2d filters
+//  * @param fs: filter size
+//  */
+// __global__ void PFKernel2D(float* d_bins, float* d_x, int n, int B, float* d_hsigma, float* d_filter, int fs){
+//     // Get thread indices
+//     int idx = threadIdx.x + blockIdx.x * blockDim.x;  // get global thread index
+//     int idy = threadIdx.y + blockIdx.y * blockDim.y;  // get global thread index
+    
+//     /* While threads are within filter size boundary */
+//     if(idx < fs && idy < fs){
+//         int bins_index = ((idx * B + idy) % B); 
+//         d_bins[bins_index] += d_x[((idx*n + idy * d_hsigma[idx*n + idy]) % n)] * d_filter[idx * fs + idy];
+//     }
+// }
+
+// /**
+//  * @brief Primary Permutation Function
+//  * GPU Kernel to perform spectrum permutation for 2D sparse FFT
+//  * @param d_bins: pointer to device 2d bins
+//  * @param d_x: pointer to device input 2d signal
+//  * @param d_filter: pointer to device 2d ilter
+//  * @param N: size of the input signal
+//  * @param B: number of bins
+//  * @param d_hsigma: pointer to device hash parameters
+//  * @param T: number of tiles for filter vector
+//  * @param R: R remaining elements to be permuted into bins 
+//  * 
+//  */
+// __global__ void PFTkernel2D(float* d_bins, float* d_x, float* d_filter, int N, int B, float* d_hsigma, int T, int R){
+//     int idx = threadIdx.x + blockIdx.x * blockDim.x;  // get global thread index
+//     int idy = threadIdx.y + blockIdx.y * blockDim.y;  // get global thread index
+//     /* Apply Permutation */ 
+//     /*Check if within bounds*/
+//     if((idx < N || idx == B) && (idy < N || idy == B)){
+//         /*if thread is less than B start placing frequencies to bins*/
+//         if(idx < B && idy < B){
+//             for(int j =0; j<T; j++){
+//                 for(int k =0; k<T; k++){
+//                     int x_index = idx + j * B; // calculate x index 
+//                     int y_index = idy + k * B; // calculate y index
+
+//                     /* calculate index address of hash */
+//                     int sample_index_x = ((x_index * d_hsigma) % N); 
+//                     int sample_index_y = ((y_index * d_hsigma) % N);
+
+//                     /* apply gaussian or defined filter and place value into bin */
+//                     d_bins[x_index * N + y_index] += d_x[((sample_index_x) * N + (sample_index_y))] * d_filter[((sample_index_x) * N + (sample_index_y))];
+//                 }
+//             }
+//         }
+//         if (idx == B || idy == B){
+//             for (int j =0; j< T; j++){
+//                 int x_index = idx + j * T; 
+//                 int y_index = idy + j * T;
+
+//                 d_bins[x_index * N + y_index] += d_x[((x_index * d_hsigma) % N * N + (y_index * d_hsigma) % N)] * d_filter[((x_index * d_hsigma) % N * N + (y_index * d_hsigma) % N)];
+//             }
+//         } 
+//     }
+// }
+
+// /**
+//  * @brief GPU Kernel to compute frequency and time components of input signal
+//  * preparing filter window for sublinear hashing of signal
+//  * Gaussian or Dolph-Chebyshev Filter used gather time and frequency components
+//  * G(x,y) =  1/sqrt(2pi*sigma^2) * exp(-x^2  +  y^2 / 2sigma^2)
+//  * G(f) =  exp(-2pi^2*sigma^2 * (f^2 + g^2))
+//  * @param N: size of the input signal
+//  */
+// __global__ void FilterComponentsKernel(int N, float* filter_freq, float* filter_time, float sigma, float PI = 3.14159265358979323846f){
+//      // Get thread indices
+//     int idx = threadIdx.x + blockIdx.x * blockDim.x;  // get global thread index 
+//     int idy = threadIdx.y + blockIdx.y * blockDim.y;  // get global thread index
+
+//     if (idx < N && idy < N){
+//         // Frequency component 
+//         float f = idx; 
+//         float g = idy;
+//         int filter_time_index = idx * N + idy;
+//         int filter_freq_index = idx * N + idy;
+//         // place into time signal vector  g(x,y)
+//         filter_time[filter_time_index] = (1.0f / sqrtf(2.0f * PI * sigma * sigma)) * exp(-(f*f + g*g) / 2.0f * sigma * sigma);
+
+//         // place into freq signal vectors 
+//         filter_freq[filter_freq_index] = exp(-2.0f * PI * PI * sigma * sigma) * (exp(-(f*f + g*g)));
+//     }
+// }
+// /**
+//  * @brief GPU Host Function to call GPU Permutation and Filtering Kernels
+//  */
+// __host__ void PermutationFilterGPU(dim3 numBlocks, dim3 threads_per_block, float* dx, int B, float* d_filter, int fs, float* d_bins, float* d_hsigma){
+//     /* Calculate T number of tiles for filter vector and r remaining elemnts of the filter */
+//     int t = fs / B; 
+//     int r = fs % B;
+    
+//     /* Define GPU kernel launch parameters */
+
+//     /* GPU-SFFT if input size is < 2^27 call PFTKern ELSE call PFKern */
+//     if (fs <= INPUT_SIZE_CHECK) {
+//         PFTkernel2D<<<numBlocks, threads_per_block>>>( d_bins, dx, d_filter, fs, B, d_hsigma, t, r);
+
+//     }
+//     else{
+//         PFKernel2D<<<numBlocks, threads_per_block>>>( d_bins, dx, fs, B, d_hsigma, d_filter, fs);
+//     }
+// }
+
+// /**
+//  * @brief Outer Loop for 2D Sparse FFT
+//  * @param input_signal: pointer to host input 2d signal
+//  */
+// #define LOOP_ITERATIONS 48 // l
+// #define k 1024 // sparsity
+// #define B k // Number of bins
+// #define Bt 2*B // Bins threshold
+// #define W  32 // window size 
+// #define L 32 // Hashing Rounds - 
+// #define Lc  8 // subset of rounds to find indices of significant frequencies
+// #define Ll 8 // Conditional check to determine to run Reverse Hashing function
+
 
 
 // int main(){

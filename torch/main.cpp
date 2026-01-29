@@ -8,6 +8,7 @@ int main(int argc, char* argv[]){
         std::cerr << "Usage: " << argv[0] << " <mode> [additional arguments]" << std::endl;
         std::cerr << "Modes:" << std::endl;
         std::cerr << "  train_cifar" << std::endl;
+        std::cerr << "  train_resnet" << std::endl;
         std::cerr << "  inference <model_path> <data_path> <label_file_path>" << std::endl;
         return 1;
     }
@@ -20,8 +21,12 @@ int main(int argc, char* argv[]){
             return 1;
         }
         inference::runInference(argv[2], argv[3], argv[4]);
+    } 
+    if (mode == "train_resnet") {
+        train::trainResNet();
     } else {
         std::cerr << "Unknown mode: " << mode << std::endl;
         return 1;
     }
+    return 0;
 }

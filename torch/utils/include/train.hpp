@@ -11,10 +11,12 @@
 #include <dlfcn.h>
 #include "dataprep.hpp" 
 #include "AlexNet.hpp"
+#include "resnet.hpp"
 
 namespace train{
-    void KeypointFunction();
+    HandKeypoint KeypointFunction(const std::string &DATAPATH);
     void TestCustomOperator();
     void trainCIFAR();
+    void trainResNet();
     CIFAR TestReadingCIFARBin(std::string root, CIFAR::Mode mode);
 }

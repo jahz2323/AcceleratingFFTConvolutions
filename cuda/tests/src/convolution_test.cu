@@ -61,18 +61,22 @@ void convolution_test::test1DConvolution(){
     torch 2conv
     custom 2dfftconv
 **/
-void convolution_test::test2DConvolution(int test_input_height,
-                                            int test_input_width,
-                                            int test_filter_height,
-                                            int test_filter_width,
-                                            int test_stride,
-                                            int test_padding
+void convolution_test::test2DConvolution(
+    int test_input_height,
+    int test_input_width,
+    int test_filter_height,
+    int test_filter_width,
+    int test_stride,
+    int test_padding
     ){
     std ::cout << "Running 2D Convolution Test..." << std::endl;
 
     // Static clock
     cudaEvent_t start, stop;
-    float milliseconds = 0;
+    float custom_conv2d_milliseconds = 0;
+    float torch_conv2d_milliseconds = 0;
+    float spectral_conv2d_milliseconds = 0;
+    float cuFFT_conv2d_milliseconds = 0;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
@@ -85,19 +89,6 @@ void convolution_test::test2DConvolution(int test_input_height,
     int padding = test_padding;
     int out_width = ((in_width - filter_width + 2 * padding) / stride) + 1;
     int out_height = ((in_height - filter_height + 2 * padding) / stride) + 1;
-
-    //allocate and initialize host memory
-    // std::vector<float> h_input = {
-    //     1, 2, 3, 4,
-    //     5, 6, 7, 8,
-    //     9,10,11,12,
-    //    13,14,15,16
-    // };
-    // std::vector<float> h_filter = {
-    //     1,0,-1,
-    //     1,0,-1,
-    //     1,0,-1
-    // };
 
     // generate random input and filter
     std::vector<float> h_input(in_width * in_height);
@@ -142,13 +133,19 @@ void convolution_test::test2DConvolution(int test_input_height,
     int padded_filter_width =  fft_w - filter_width;
     int padded_filter_height = fft_h - filter_height;
     
+    //Check padding dims 
+    std::cout << "{Input} width to pad to: " << padded_in_width << " height to pad to: " << padded_in_height << std::endl;
+    std::cout << "{Filter} width to pad to: " << padded_filter_width << " height to pad to: " << padded_filter_height << std::endl;
+    std::cout << "{FFT Conv} Target dimensions: " << fft_w << " x " << fft_h << std::endl;
+    
     // pad to target dimensions 
-    torch::Tensor padded_input = torch::constant_pad_nd(input_tensor, {0, padded_in_width, 0, padded_in_height}, 0);
-    torch::Tensor padded_filter = torch::constant_pad_nd(filter_tensor, {0, padded_filter_width, 0, padded_filter_height}, 0);
-    torch::Tensor padded_output = torch::zeros({fft_h, fft_w}, gpu_options);
+    torch::Tensor padded_input = torch::constant_pad_nd(input_tensor, {0, padded_in_width, 0, padded_in_height}, 0).contiguous();
+    torch::Tensor padded_filter = torch::constant_pad_nd(filter_tensor, {0, padded_filter_width, 0, padded_filter_height}, 0).contiguous();
+    torch::Tensor padded_output = torch::zeros({fft_h, fft_w}, gpu_options).contiguous();
 
     // Bring back to host as float*
     float *padded_input_ptr, *padded_filter_ptr, *padded_output_ptr;
+    
     padded_input_ptr = padded_input.data_ptr<float>();
     padded_filter_ptr = padded_filter.data_ptr<float>();
     padded_output_ptr = padded_output.data_ptr<float>();
@@ -160,26 +157,31 @@ void convolution_test::test2DConvolution(int test_input_height,
     cudaMalloc((void**)&d_padded_output, fft_h * fft_w * sizeof(cuComplex));
 
     //Copy float* to complex* - pass to _2D_FFTConv
-    dim3 fft_threadsPerBlock(16, 16);
+    int max_threads = 32; // 4080 CUDA max threads per block is 1024
+    dim3 fft_threadsPerBlock(max_threads, max_threads);
     dim3 fft_blocksPerGrid((fft_w + fft_threadsPerBlock.x - 1) / fft_threadsPerBlock.x,
                            (fft_h + fft_threadsPerBlock.y - 1) / fft_threadsPerBlock.y);
-    utils::float2complex<<<fft_blocksPerGrid, fft_threadsPerBlock>>>(
+    cuda_operations::float2complex<<<fft_blocksPerGrid, fft_threadsPerBlock>>>(
         fft_w, fft_h, padded_input_ptr, d_padded_input
     );
-    dim3 filter_threadsPerBlock(16, 16);
+    dim3 filter_threadsPerBlock(max_threads, max_threads);
     dim3 filter_blocksPerGrid((fft_w + filter_threadsPerBlock.x - 1) / filter_threadsPerBlock.x,
                              (fft_h + filter_threadsPerBlock.y - 1) / filter_threadsPerBlock.y);
-    utils::float2complex<<<filter_blocksPerGrid, filter_threadsPerBlock>>>(
+    cuda_operations::float2complex<<<filter_blocksPerGrid, filter_threadsPerBlock>>>(
         fft_w, fft_h, padded_filter_ptr, d_padded_filter
     );
-    dim3 output_threadsPerBlock(16, 16);
+    dim3 output_threadsPerBlock(max_threads, max_threads);
     dim3 output_blocksPerGrid((fft_w + output_threadsPerBlock.x - 1) / output_threadsPerBlock.x,
                              (fft_h + output_threadsPerBlock.y - 1) / output_threadsPerBlock.y);
-    utils::float2complex<<<output_blocksPerGrid, output_threadsPerBlock>>>(
+    cuda_operations::float2complex<<<output_blocksPerGrid, output_threadsPerBlock>>>(
         fft_w, fft_h, padded_output_ptr, d_padded_output
     );
     cudaDeviceSynchronize();
 
+    // DEBUG: Check CuComplex pointers 
+    // utils::checkcuComplexArray(d_padded_input, fft_w, fft_h, "Padded Input");
+    // utils::checkcuComplexArray(d_padded_filter, fft_w, fft_h, "Padded Filter");
+    // utils::checkcuComplexArray(d_padded_output, fft_w, fft_h, "Padded Output");
     /**
         @note: Custom 2D Convolution
         DO NOT MODIFY DIMENSIONS HERE
@@ -199,33 +201,32 @@ void convolution_test::test2DConvolution(int test_input_height,
     dim3 blocksPerGrid((out_width + threadsPerBlock.x - 1) / threadsPerBlock.x,
                        (out_height + threadsPerBlock.y - 1) / threadsPerBlock.y);
     // RUN KERNEL 
+    cudaDeviceSynchronize();
     cudaEventRecord(start);
     cuda_operations::_2DConv<<<blocksPerGrid, threadsPerBlock>>>(
         in_width, in_height, filter_width, filter_height, stride, padding,
         d_input, d_filter, d_output
     );
-    cudaEventRecord(stop);
-    
     // synchronize
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "Custom Conv2d Failed: " << cudaGetErrorString(err) << " at dim " << in_width * in_height << std::endl;
+        return; // Exit before Torch tries to run and throws the AcceleratorError
+    }
+    cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    std::cout << "Time: " << milliseconds << " ms" << std::endl;
+    cudaEventElapsedTime(&custom_conv2d_milliseconds, start, stop);
+    std::cout << "Custom 2D Convolution Time Test:" << std::endl;
+    std::cout << "Time: " << custom_conv2d_milliseconds << " ms" << std::endl;
 
     //copy result back to host
     cudaMemcpy(h_output.data(), d_output, out_width * out_height * sizeof(float), cudaMemcpyDeviceToHost);
     //free device memory
-    cudaFree(d_input);
-    cudaFree(d_filter);
-    cudaFree(d_output);
+
     //print output
+    std:: cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
     std::cout << "Convolution Output: " << std::endl;
-    for (int i = 0; i < out_height; ++i) {
-        for (int j = 0; j < out_width; ++j) {
-            std::cout << h_output[i * out_width + j] << " ";
-        }
-        std::cout << std::endl;
-    }
+    // utils::printConvResult(h_output, out_width, out_height);
     /**
         @note: End of Custom 2D Convolution
     */
@@ -234,9 +235,23 @@ void convolution_test::test2DConvolution(int test_input_height,
         @note: Torch Conv2D Equivalence Test
     */
     std::cout << "Testing Torch Conv2D equivalence..." << std::endl;    
-    // pass input,filter and to device
+    // Copy torch tensors to scratch 
+    auto scratch_input = input_tensor.clone();
+    auto scratch_filter = filter_tensor.clone();
+    // Warm up Torch Conv2d
+    auto warmup_torchConv2d = torch::conv2d(
+        scratch_input, scratch_filter, /*bias=*/{}, /*stride=*/{stride, stride},
+        /*padding=*/{padding, padding}, /*dilation=*/{1, 1}, /*groups=*/1
+    );
+    cudaDeviceSynchronize();
+
+    // refresh input and filter tensors
+    input_tensor = input_tensor.clone();
+    filter_tensor = filter_tensor.clone();
+
     input_tensor = input_tensor.to(device);
     filter_tensor = filter_tensor.to(device);
+    cudaDeviceSynchronize();
     cudaEventRecord(start);
     // RUN KERNEL 
     auto torchConv2d_result = torch::conv2d(
@@ -244,15 +259,18 @@ void convolution_test::test2DConvolution(int test_input_height,
         /*padding=*/{padding, padding}, /*dilation=*/{1, 1}, /*groups=*/1
     );
     // Stop timer
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "Torch Kernel Failed: " << cudaGetErrorString(err) << " at dim " << in_width * in_height << std::endl;
+        return; // Exit before Spectral tries to run and throws the AcceleratorError
+    }     
     cudaEventRecord(stop);
-    
-    std::cout << "torchConv2d_result : " << std::endl;
-    std::cout << torchConv2d_result << std::endl;
-
-    cudaDeviceSynchronize();
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    std::cout << "Time: " << milliseconds << " ms" << std::endl;
+    // std::cout << "torchConv2d_result : " << std::endl;
+    // std::cout << torchConv2d_result << std::endl;
+
+    cudaEventElapsedTime(&torch_conv2d_milliseconds, start, stop);
+    std::cout << "Time: " << torch_conv2d_milliseconds << " ms" << std::endl;
 
     /**
         @note: End of Torch Conv2D Equivalence Test
@@ -263,30 +281,41 @@ void convolution_test::test2DConvolution(int test_input_height,
     */
     // Call 2DFFTConv 
     std::cout << "Testing Spectral Conv2D equivalence..." << std::endl;
+    cudaDeviceSynchronize();
     cudaEventRecord(start);
     // RUN KERNEL
     cuda_operations::_2D_FFTConv(
         fft_h, fft_w, fft_h, fft_w,
         d_padded_input, d_padded_filter, d_padded_output
     );
+     // synchronize
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "Spectral Kernel Failed: " << cudaGetErrorString(err) << " at dim " << in_width * in_height << std::endl;
+        return; // Exit before Torch tries to run and throws the AcceleratorError
+    }
+    
     cudaEventRecord(stop);
-
-    // synchronize
-    cudaDeviceSynchronize();
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    std::cout << "Time: " << milliseconds << " ms" << std::endl;
+    cudaEventElapsedTime(&spectral_conv2d_milliseconds, start, stop);
+    std::cout << "Time: " << spectral_conv2d_milliseconds << " ms" << std::endl;
 
 
     //Calulate offset dims @note SINCE USING CROSS-CORRELATION - DESIRED OUTPUT IS LOCATED AT TOP-LEFT 
-    int offset_w = 0;
-    int offset_h = 0;
+    int offset_w = 0; //filter_width - 1;
+    int offset_h = 0; //filter_height - 1;
    
     // Convert back to float*
-    utils::complex2float<<<output_blocksPerGrid, output_threadsPerBlock>>>(
+    cuda_operations::complex2float<<<output_blocksPerGrid, output_threadsPerBlock>>>(
         fft_w, fft_w, d_padded_output, padded_output_ptr
     );
+    
+    // Output for spectral conv2d
     std::vector <float> spectral_output(out_width * out_height, 0.0f);
+    //Create a copy for cuFFT conv2d
+    std::vector <float> spectral_output_cufft(out_width * out_height, 0.0f);
+
+    // Copy relevant output region back to host
     cudaMemcpy2D(
         spectral_output.data(), //1. dst
         out_width * sizeof(float), // 2. dstPitch
@@ -297,28 +326,196 @@ void convolution_test::test2DConvolution(int test_input_height,
         cudaMemcpyDeviceToHost // 7. kind
     );
     
-    // Print the spectral output
+    //Print the spectral output
+    std::cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
     std::cout << "Spectral Conv2D Output : " << std::endl;
-    for (int i = 0; i < out_height; ++i) {
-        for (int j = 0; j < out_width; ++j) {
-            std::cout << spectral_output[i * out_width + j] << " ";
-        }
-        std::cout << std::endl;
-    }
+    utils::printConvResult(spectral_output, out_width, out_height);
     /**
         @note: End of Spectral Conv2D Equivalence Test
     */
+
+    /**
+        @note: Optimised FFTConv2D Equivalence Test
+    */
+    std::cout << "Testing Optimised FFT Conv2D equivalence..." << std::endl;
+    // Warm up Optimised FFTConv
+    cuda_operations::Optimised2DFFTConv(
+        fft_w, fft_h,
+        d_padded_input, d_padded_filter, d_padded_output
+    );
+    cudaDeviceSynchronize();
+    // refresh input and filter tensors
+    cudaMemcpy(d_padded_input, d_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_padded_filter, d_padded_filter, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaEventRecord(start);
+    // RUN KERNEL
+    cuda_operations::Optimised2DFFTConv(
+        fft_w, fft_h,
+        d_padded_input, d_padded_filter, d_padded_output
+    );
+     // synchronize
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "Optimised FFT Kernel Failed: " << cudaGetErrorString(err)
+                    << " at dim " << in_width * in_height << std::endl; 
+        return; // Exit before Torch tries to run and throws the AcceleratorError
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&spectral_conv2d_milliseconds, start, stop);
+    std::cout << "Time: " << spectral_conv2d_milliseconds << " ms" << std::endl;
+    //Calulate offset dims @note SINCE USING CROSS-CORRELATION - DESIRED OUTPUT IS LOCATED AT TOP-LEFT
+    // Convert back to float*
+    cuda_operations::complex2float<<<output_blocksPerGrid, output_threadsPerBlock>>>(
+        fft_w, fft_w, d_padded_output, padded_output_ptr
+    );
+    cudaMemcpy2D(
+        spectral_output.data(), //1. dst
+        out_width * sizeof(float), // 2. dstPitch
+        padded_output_ptr + (offset_h * fft_w + offset_w), // 3. src
+        fft_w * sizeof(float), // 4. srcPitch
+        out_width * sizeof(float), // 5. width
+        out_height, // 6. height
+        cudaMemcpyDeviceToHost // 7. kind
+    );
+    // Print the spectral output
+    std::cout << "Optimised FFT Conv2D Output : " << std::endl;
+    utils::printConvResult(spectral_output, out_width, out_height);
     
+    /**
+        @note cuFFTConv Test
+
+    */
+    std::cout << "Testing cuFFT Conv2D equivalence..." << std::endl;    
+
+    //Setup cuFFT based Conv2D
+    cufftHandle plan;
+    if(cufftPlan2d(&plan, fft_h, fft_w, CUFFT_C2C) != CUFFT_SUCCESS){
+        std::cerr << "CUFFT Plan Creation Failed at dim: " << fft_h << " x " << fft_w << std::endl;
+        return;
+    }
+    // Setup dummy memory ptrs
+    cuComplex *d_input_scratch, *d_filter_scratch;
+    cudaMalloc((void**)&d_input_scratch, fft_w * fft_h * sizeof(cuComplex));
+    cudaMalloc((void**)&d_filter_scratch, fft_w * fft_h * sizeof(cuComplex));
+
+    cudaMemcpy(d_input_scratch, d_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_filter_scratch, d_padded_filter, fft_w * fft_h* sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+
+    //Warm up cuFFT
+    cuda_operations::_2DcuFFTConv(
+        plan,
+        fft_w, fft_h, fft_w, fft_h,
+        d_input_scratch, d_filter_scratch, d_padded_output
+    );
+    cudaDeviceSynchronize();
+
+    // refresh scratch pads
+    cudaMemcpy(d_input_scratch, d_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_filter_scratch, d_padded_filter, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+
+    // Start Timer
+    cudaEventRecord(start);
+    // RUN KERNEL
+    cuda_operations::_2DcuFFTConv(
+        plan,
+        fft_w, fft_h, fft_w, fft_h,
+        d_input_scratch, d_filter_scratch, d_padded_output
+    );
+     // synchronize
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "cuFFT Kernel Failed: " << cudaGetErrorString(err)
+                    << " at dim " << in_width * in_height << std::endl; 
+        return; // Exit before Torch tries to run and throws the AcceleratorError
+    }     
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&cuFFT_conv2d_milliseconds, start, stop);
+    std::cout << "Time: " << cuFFT_conv2d_milliseconds << " ms" << std::endl;
+
+    //Calulate offset dims @note SINCE USING CROSS-CORRELATION - DESIRED OUTPUT IS LOCATED AT TOP-LEFT 
+  
+    // Convert back to float*
+    cuda_operations::complex2float<<<output_blocksPerGrid, output_threadsPerBlock>>>(
+        fft_w, fft_w, d_padded_output, padded_output_ptr
+    );
+    
+    cudaMemcpy2D(
+        spectral_output_cufft.data(), //1. dst
+        out_width * sizeof(float), // 2. dstPitch
+        padded_output_ptr + (offset_h * fft_w + offset_w), // 3. src
+        fft_w * sizeof(float), // 4. srcPitch
+        out_width * sizeof(float), // 5. width
+        out_height, // 6. height
+        cudaMemcpyDeviceToHost // 7. kind
+    );
+    // Print the spectral output
+    // std::cout << "cuFFT Conv2D Output : " << std::endl;
+    // utils::printConvResult(spectral_output, out_width, out_height);
+
+
     //free complex device memory
-    cudaFree(d_padded_input);
-    cudaFree(d_padded_filter);
-    cudaFree(d_padded_output);
+    // cudaFree(d_padded_input);
+    // cudaFree(d_padded_filter);
+    // cudaFree(d_padded_output);
+
     cudaFree(d_input);
     cudaFree(d_filter);
     cudaFree(d_output);
+
+    // free scratch pads
+    cudaFree(d_input_scratch);
+    cudaFree(d_filter_scratch);
+
+    // destroy events and plan
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+    cufftDestroy(plan);
     std::cout << "2D Convolution test executed." << std::endl;
+
+    
+    // write results to result_file 
+    /**
+        Conv_Method | Input_Dimensions | Filter_Dimensions | Stride | Padding | Time_ms 
+    */
+    // std::filesystem::path root = std::filesystem::current_path().parent_path().parent_path().parent_path();
+    // std::string path_to_results = "/data/measurements/";
+    // std::string result_file = "2048.csv";
+    // std::vector<std::string> csv_content = {
+    //     "Custom_2DConv",
+    //     std::to_string(in_height) + "x" + std::to_string(in_width),
+    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+    //     std::to_string(stride),
+    //     std::to_string(padding),
+    //     std::to_string(custom_conv2d_milliseconds),
+    //     "Torch_Conv2D",
+    //     std::to_string(in_height) + "x" + std::to_string(in_width),
+    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+    //     std::to_string(stride),
+    //     std::to_string(padding),
+    //     std::to_string(torch_conv2d_milliseconds),
+    //     "Spectral_2DFFTConv",
+    //     std::to_string(in_height) + "x" + std::to_string(in_width),
+    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+    //     std::to_string(stride),
+    //     std::to_string(padding),
+    //     std::to_string(spectral_conv2d_milliseconds),
+    //     "CuFFT_2DConv",
+    //     std::to_string(in_height) + "x" + std::to_string(in_width),
+    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+    //     std::to_string(stride),
+    //     std::to_string(padding),
+    //     std::to_string(cuFFT_conv2d_milliseconds)
+    // };
+    // std::string entire_path = root.string() + path_to_results + result_file;
+    // utils::writeCSV(entire_path, csv_content);
+
+
+    cudaError_t err_final = cudaGetLastError();
+    if (err_final != cudaSuccess) {
+        std::cerr << "Post-test CUDA error: " << cudaGetErrorString(err_final) << std::endl;
+    }
 }
 
 
@@ -328,10 +525,31 @@ void convolution_test::test2DConvolution(int test_input_height,
 void convolution_test::convolve(){ 
     std::cout << "Starting various convolution tests..." << std::endl;
     //convolution_test::test1DConvolution();
-    std::vector<int> input_dims = {32, 64};
-    std::vector<int> filter_dims = {3, 5, 7, 11, 16};
+    // explodes for conv over 16 need to fix 
+    // Alex net convs are 32x32,11x11,5x5,3x3
+    // std::vector<int> input_dims = {3, 5 , 7, 11, 16, 18, 20, 22 ,24, 28, 64, 128};
+    // std::vector<int> filter_dims = {3, 5, 7, 11, 16, 18, 20, 22, 24, 28, 64, 128};
+    // provide vectors 128, 256, 512, 1024
+    std::vector<int> input_dims = {22};
+    std::vector<int> filter_dims = {3,5,7,11};
     int stride = 1;
     int padding = 0;
-    convolution_test::test2DConvolution(5, 5, 3, 3, stride, padding);
+    for (const auto& in_dim : input_dims){
+        for (const auto& filter_dim : filter_dims){
+            if(filter_dim > in_dim) continue; // skip invalid cases
+
+            // clear cache before each test
+            //cudaDeviceReset();
+            convolution_test::test2DConvolution(in_dim, in_dim, filter_dim, filter_dim, stride, padding);
+            cudaError_t err = cudaDeviceSynchronize();
+            if (err != cudaSuccess) {
+                std::cerr << "Test Failed for Input Dim: " << in_dim << " Filter Dim: " << filter_dim 
+                          << " Error: " << cudaGetErrorString(err) << std::endl;
+            }   else {
+                std::cout << "Test Passed for Input Dim: " << in_dim << " Filter Dim: " << filter_dim << std::endl;
+            }
+        }
+    }
+    //convolution_test::test2DConvolution(128,128, 64, 64, stride, padding); // Input {3,6,11,} filter{3, 5, 7} 
     std::cout << "All convolution tests completed." << std::endl;
 }
