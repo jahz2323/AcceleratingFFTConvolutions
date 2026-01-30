@@ -8,7 +8,6 @@
 #include "cuda_operations.cuh"
 #include "utils.cuh"
 
-
 /**
  * @file cuda_operations.cu
  * @brief CUDA implementation of convolution operations 

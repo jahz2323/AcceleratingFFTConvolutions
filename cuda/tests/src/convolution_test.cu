@@ -76,6 +76,7 @@ void convolution_test::test2DConvolution(
     float custom_conv2d_milliseconds = 0;
     float torch_conv2d_milliseconds = 0;
     float spectral_conv2d_milliseconds = 0;
+    float shared_memory_spectral_conv2d_milliseconds = 0;
     float cuFFT_conv2d_milliseconds = 0;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -226,7 +227,7 @@ void convolution_test::test2DConvolution(
     //print output
     std:: cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
     std::cout << "Convolution Output: " << std::endl;
-    // utils::printConvResult(h_output, out_width, out_height);
+    utils::printConvResult(h_output, out_width, out_height);
     /**
         @note: End of Custom 2D Convolution
     */
@@ -327,9 +328,9 @@ void convolution_test::test2DConvolution(
     );
     
     //Print the spectral output
-    std::cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
-    std::cout << "Spectral Conv2D Output : " << std::endl;
-    utils::printConvResult(spectral_output, out_width, out_height);
+    //std::cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
+    //std::cout << "Spectral Conv2D Output : " << std::endl;
+    //utils::printConvResult(spectral_output, out_width, out_height);
     /**
         @note: End of Spectral Conv2D Equivalence Test
     */
@@ -362,8 +363,8 @@ void convolution_test::test2DConvolution(
     }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&spectral_conv2d_milliseconds, start, stop);
-    std::cout << "Time: " << spectral_conv2d_milliseconds << " ms" << std::endl;
+    cudaEventElapsedTime(&shared_memory_spectral_conv2d_milliseconds, start, stop);
+    std::cout << "Time: " << shared_memory_spectral_conv2d_milliseconds << " ms" << std::endl;
     //Calulate offset dims @note SINCE USING CROSS-CORRELATION - DESIRED OUTPUT IS LOCATED AT TOP-LEFT
     // Convert back to float*
     cuda_operations::complex2float<<<output_blocksPerGrid, output_threadsPerBlock>>>(
@@ -481,7 +482,7 @@ void convolution_test::test2DConvolution(
     */
     // std::filesystem::path root = std::filesystem::current_path().parent_path().parent_path().parent_path();
     // std::string path_to_results = "/data/measurements/";
-    // std::string result_file = "2048.csv";
+    // std::string result_file = "512.csv";
     // std::vector<std::string> csv_content = {
     //     "Custom_2DConv",
     //     std::to_string(in_height) + "x" + std::to_string(in_width),
@@ -501,6 +502,12 @@ void convolution_test::test2DConvolution(
     //     std::to_string(stride),
     //     std::to_string(padding),
     //     std::to_string(spectral_conv2d_milliseconds),
+    //     "OptimisedSharedMemory_2DFFTConv",
+    //     std::to_string(in_height) + "x" + std::to_string(in_width),
+    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+    //     std::to_string(stride),
+    //     std::to_string(padding),
+    //     std::to_string(shared_memory_spectral_conv2d_milliseconds),
     //     "CuFFT_2DConv",
     //     std::to_string(in_height) + "x" + std::to_string(in_width),
     //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
@@ -530,8 +537,8 @@ void convolution_test::convolve(){
     // std::vector<int> input_dims = {3, 5 , 7, 11, 16, 18, 20, 22 ,24, 28, 64, 128};
     // std::vector<int> filter_dims = {3, 5, 7, 11, 16, 18, 20, 22, 24, 28, 64, 128};
     // provide vectors 128, 256, 512, 1024
-    std::vector<int> input_dims = {22};
-    std::vector<int> filter_dims = {3,5,7,11};
+    std::vector<int> input_dims = {32};
+    std::vector<int> filter_dims = {3, 5};
     int stride = 1;
     int padding = 0;
     for (const auto& in_dim : input_dims){
