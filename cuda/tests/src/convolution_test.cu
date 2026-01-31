@@ -95,7 +95,7 @@ void convolution_test::test2DConvolution(
     std::vector<float> h_input(in_width * in_height);
     std::vector<float> h_filter(filter_width * filter_height);
     for (int i = 0; i < in_width * in_height; ++i) {
-        h_input[i] = static_cast<float>(rand() % 10);
+        h_input[i] = static_cast<float>(rand() % 10); // values between 0 and 9
     }
     for (int i = 0; i < filter_width * filter_height; ++i) {
         h_filter[i] = static_cast<float>(rand() % 3 - 1); // values between -1 and 1
@@ -179,10 +179,18 @@ void convolution_test::test2DConvolution(
     );
     cudaDeviceSynchronize();
 
+    // IMPORTANT SAVE STATE OF d_padded_input, d_padded_filter, d_padded_output FOR EACH TEST
+    cuComplex* d_saved_padded_input, * d_saved_padded_filter;
+    cudaMalloc((void**)&d_saved_padded_input, fft_h * fft_w * sizeof(cuComplex));
+    cudaMalloc((void**)&d_saved_padded_filter, fft_h * fft_w * sizeof(cuComplex));
+
+    cudaMemcpy(d_saved_padded_input, d_padded_input, fft_h * fft_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_saved_padded_filter, d_padded_filter, fft_h * fft_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+
     // DEBUG: Check CuComplex pointers 
-    // utils::checkcuComplexArray(d_padded_input, fft_w, fft_h, "Padded Input");
-    // utils::checkcuComplexArray(d_padded_filter, fft_w, fft_h, "Padded Filter");
-    // utils::checkcuComplexArray(d_padded_output, fft_w, fft_h, "Padded Output");
+    utils::checkcuComplexArray(d_padded_input, fft_w, fft_h, "Padded Input");
+    utils::checkcuComplexArray(d_padded_filter, fft_w, fft_h, "Padded Filter");
+    utils::checkcuComplexArray(d_padded_output, fft_w, fft_h, "Padded Output");
     /**
         @note: Custom 2D Convolution
         DO NOT MODIFY DIMENSIONS HERE
@@ -267,8 +275,8 @@ void convolution_test::test2DConvolution(
     }     
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    // std::cout << "torchConv2d_result : " << std::endl;
-    // std::cout << torchConv2d_result << std::endl;
+    std::cout << "torchConv2d_result : " << std::endl;
+    std::cout << torchConv2d_result << std::endl;
 
     cudaEventElapsedTime(&torch_conv2d_milliseconds, start, stop);
     std::cout << "Time: " << torch_conv2d_milliseconds << " ms" << std::endl;
@@ -315,6 +323,9 @@ void convolution_test::test2DConvolution(
     std::vector <float> spectral_output(out_width * out_height, 0.0f);
     //Create a copy for cuFFT conv2d
     std::vector <float> spectral_output_cufft(out_width * out_height, 0.0f);
+    // Output for Optimised spectral conv2d
+    std::vector <float> optimised_spectral_output(out_width * out_height, 0.0f);
+
 
     // Copy relevant output region back to host
     cudaMemcpy2D(
@@ -328,8 +339,8 @@ void convolution_test::test2DConvolution(
     );
     
     //Print the spectral output
-    //std::cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
-    //std::cout << "Spectral Conv2D Output : " << std::endl;
+    std::cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
+    std::cout << "Spectral Conv2D Output : " << std::endl;
     //utils::printConvResult(spectral_output, out_width, out_height);
     /**
         @note: End of Spectral Conv2D Equivalence Test
@@ -338,16 +349,20 @@ void convolution_test::test2DConvolution(
     /**
         @note: Optimised FFTConv2D Equivalence Test
     */
+
+
     std::cout << "Testing Optimised FFT Conv2D equivalence..." << std::endl;
     // Warm up Optimised FFTConv
-    cuda_operations::Optimised2DFFTConv(
-        fft_w, fft_h,
-        d_padded_input, d_padded_filter, d_padded_output
-    );
+    // cuda_operations::Optimised2DFFTConv(
+    //     fft_w, fft_h,
+    //     d_padded_input, d_padded_filter, d_padded_output
+    // );
+    // cudaDeviceSynchronize();
+    // // refresh input and filter tensors
+    cudaMemcpy(d_padded_input, d_saved_padded_input, fft_h * fft_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_padded_filter, d_saved_padded_filter, fft_h * fft_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_padded_output, d_saved_padded_input, fft_h * fft_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
     cudaDeviceSynchronize();
-    // refresh input and filter tensors
-    cudaMemcpy(d_padded_input, d_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_padded_filter, d_padded_filter, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
     cudaEventRecord(start);
     // RUN KERNEL
     cuda_operations::Optimised2DFFTConv(
@@ -371,7 +386,7 @@ void convolution_test::test2DConvolution(
         fft_w, fft_w, d_padded_output, padded_output_ptr
     );
     cudaMemcpy2D(
-        spectral_output.data(), //1. dst
+        optimised_spectral_output.data(), //1. dst
         out_width * sizeof(float), // 2. dstPitch
         padded_output_ptr + (offset_h * fft_w + offset_w), // 3. src
         fft_w * sizeof(float), // 4. srcPitch
@@ -379,9 +394,11 @@ void convolution_test::test2DConvolution(
         out_height, // 6. height
         cudaMemcpyDeviceToHost // 7. kind
     );
+    std::cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
+
     // Print the spectral output
     std::cout << "Optimised FFT Conv2D Output : " << std::endl;
-    utils::printConvResult(spectral_output, out_width, out_height);
+    utils::printConvResult(optimised_spectral_output, out_width, out_height);
     
     /**
         @note cuFFTConv Test
@@ -400,8 +417,8 @@ void convolution_test::test2DConvolution(
     cudaMalloc((void**)&d_input_scratch, fft_w * fft_h * sizeof(cuComplex));
     cudaMalloc((void**)&d_filter_scratch, fft_w * fft_h * sizeof(cuComplex));
 
-    cudaMemcpy(d_input_scratch, d_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_filter_scratch, d_padded_filter, fft_w * fft_h* sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_input_scratch, d_saved_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_filter_scratch, d_saved_padded_filter, fft_w * fft_h* sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     //Warm up cuFFT
     cuda_operations::_2DcuFFTConv(
@@ -523,6 +540,32 @@ void convolution_test::test2DConvolution(
     if (err_final != cudaSuccess) {
         std::cerr << "Post-test CUDA error: " << cudaGetErrorString(err_final) << std::endl;
     }
+
+    //copy h_output and spectral output to float vectors for error measurement
+    std::vector<float> h_output_vec(h_output.begin(), h_output.end());
+    std::vector<float> spectral_output_vec(spectral_output.begin(), spectral_output.end());
+    std::vector<float> optimised_spectral_output_vec(optimised_spectral_output.begin(), optimised_spectral_output.end());
+    
+    // measure correctness between methods
+    float mse = utils::MeasureError(
+        h_output_vec,
+        spectral_output_vec
+    );
+    //measure correctness between custom and optimised spectral
+    float mse_optimised = utils::MeasureError(
+        h_output_vec,
+        optimised_spectral_output_vec
+    );
+    //Measure correctness between custom and cuFFT
+    float mse_cufft = utils::MeasureError(
+        h_output_vec,
+        spectral_output_cufft
+    );
+
+    // Print MSE results
+    std::cout << "Mean Squared Error between Custom 2D Conv and Spectral 2D FFT Conv: " << mse << std::endl;
+    std::cout << "Mean Squared Error between Custom 2D Conv and Optimised Spectral 2D FFT Conv: " << mse_optimised << std::endl;
+    std::cout << "Mean Squared Error between Custom 2D Conv and cuFFT 2D Conv: " << mse_cufft << std::endl;
 }
 
 
@@ -537,8 +580,8 @@ void convolution_test::convolve(){
     // std::vector<int> input_dims = {3, 5 , 7, 11, 16, 18, 20, 22 ,24, 28, 64, 128};
     // std::vector<int> filter_dims = {3, 5, 7, 11, 16, 18, 20, 22, 24, 28, 64, 128};
     // provide vectors 128, 256, 512, 1024
-    std::vector<int> input_dims = {32};
-    std::vector<int> filter_dims = {3, 5};
+    std::vector<int> input_dims = {11};
+    std::vector<int> filter_dims = {5};
     int stride = 1;
     int padding = 0;
     for (const auto& in_dim : input_dims){

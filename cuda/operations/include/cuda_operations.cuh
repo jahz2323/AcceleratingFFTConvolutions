@@ -33,7 +33,7 @@ namespace cuda_operations {
     __global__ void _1D_IFFT(int width, int height, cuComplex* input, cuComplex* output);
 
     // Optimised Shared Memory FFT
-    template <bool inverse>
+    template <bool inverse, bool isRowWise>
     __global__ void OptimisedSharedMemory1DFFT(int n, cuComplex* input, cuComplex* output);
 
 

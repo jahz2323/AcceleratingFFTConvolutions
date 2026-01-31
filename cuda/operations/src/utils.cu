@@ -15,7 +15,24 @@ int utils::nextPowerOfTwo(int n){
     return 1 << count;
 }
 
-
+/**
+    @brief Measure the mean squared error between two float vectors.
+    @param output1 The first output vector.
+    @param output2 The second output vector.
+    @return The mean squared error between the two vectors.
+*/
+float utils::MeasureError(const std::vector<float>& output1, const std::vector<float>& output2){
+    if(output1.size() != output2.size()){
+        throw std::invalid_argument("Output vectors must be of the same size to measure error.");
+    }
+    float mse = 0.0f;
+    for(size_t i = 0; i < output1.size(); ++i){
+        float diff = output1[i] - output2[i];
+        mse += diff * diff;
+    }
+    mse /= static_cast<float>(output1.size());
+    return mse;
+}
 
 /**
     @brief Helper function to write a vector of strings to a CSV file.
@@ -69,15 +86,16 @@ void utils::checkcuComplexArray(cuComplex* data, int width, int height, const st
     
     // check dims 
     std::cout << "Dimensions: " << height << " x " << width << std::endl; 
-    delete[] host_data.data();
 }
 
 void utils::printConvResult(std::vector<float>& output, int out_width, int out_height){
     std::cout << "Convolution Result: " << std::endl;
     for(int i = 0; i < out_height; ++i){
+        std::cout << "Row " << i << " : ";
         for(int j = 0; j < out_width; ++j){
-            std::cout << output[i * out_width + j] << " ";
+            std::cout << std::setprecision(3) << "(" << j << ")" << output[i * out_width + j] << " ";
         }
+        
         std::cout << std::endl;
     }
 }

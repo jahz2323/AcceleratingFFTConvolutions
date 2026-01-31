@@ -9,9 +9,11 @@
 #include <fstream> 
 #include <filesystem>
 #include <iostream>
+#include <iomanip>
+
 namespace utils{
 
-    
+    float MeasureError(const std::vector<float>& output1, const std::vector<float>& output2);
     int nextPowerOfTwo(int n);
     void checkcuComplexArray(cuComplex* data, int width, int height, const std::string& array_name);
     void writeCSV(
