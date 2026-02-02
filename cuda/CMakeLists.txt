@@ -14,6 +14,7 @@ find_package(CUDAToolkit REQUIRED)
 find_package(Python3 COMPONENTS Development NumPy REQUIRED)
 find_package(Torch REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(CURL REQUIRED)
 
 add_subdirectory(tests)
 add_subdirectory(operations)
@@ -31,4 +32,12 @@ set_target_properties(Cuda_app PROPERTIES
     CXX_STANDARD_REQUIRED YES
     CUDA_STANDARD_REQUIRED YES
 )
-target_link_libraries(Cuda_app PRIVATE tests operations libs "${TORCH_LIBRARIES}")
+target_link_libraries(Cuda_app PRIVATE -Wl,--start-group
+    tests 
+    operations 
+    libs
+    -Wl,--end-group
+    "${TORCH_LIBRARIES}" 
+    ${OpenCV_LIBS}
+    CURL::libcurl 
+)

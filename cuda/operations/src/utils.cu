@@ -2,6 +2,7 @@
 
 
 
+
 int utils::nextPowerOfTwo(int n){
     int count = 0;
     // First n in the below condition is for the case where n is 0
@@ -43,7 +44,8 @@ float utils::MeasureError(const std::vector<float>& output1, const std::vector<f
 */
 void utils::writeCSV(
     const std::string& path_to_file_with_filename, 
-    const std::vector<std::string> &content
+    const std::vector<std::string> &content,
+    const std::vector<std::string> &headers
 ){
     std::ofstream file_to_write_to; 
     file_to_write_to.open(path_to_file_with_filename, std::ios::out | std::ios::app);
@@ -51,7 +53,7 @@ void utils::writeCSV(
         throw std::runtime_error("Failed to open file: " + path_to_file_with_filename);
         return;
     }
-    int col_count = 6;
+    int col_count = headers.size();
     // check if header is already present
     file_to_write_to.seekp(0, std::ios::end);
     if(file_to_write_to.tellp() != 0){
@@ -59,7 +61,13 @@ void utils::writeCSV(
         file_to_write_to << "\n";
     }
     else{
-        file_to_write_to << " Conv_Method , Input_Dimensions , Filter_Dimensions , Stride , Padding , Time_ms \n";
+        for (size_t i = 0; i < headers.size(); ++i) {
+            file_to_write_to << headers[i];
+            if (i != headers.size() - 1) {
+                file_to_write_to << ",";
+            }
+        }
+        file_to_write_to << "\n";
     }
 
     // write content
@@ -87,6 +95,36 @@ void utils::checkcuComplexArray(cuComplex* data, int width, int height, const st
     // check dims 
     std::cout << "Dimensions: " << height << " x " << width << std::endl; 
 }
+
+void utils::saveOutputImage(
+    const std::string& path_to_file_with_filename,
+    const std::vector<float>& output,
+    int out_width,
+    int out_height
+){
+    // create cv::Mat from output vector
+    cv::Mat image_float(out_height, out_width, CV_32FC1, const_cast<float*>(output.data()));
+
+    // Normalize to [0, 1.0] range
+    cv::Mat normalised; 
+    double minVal, maxVal;
+    cv::minMaxLoc(image_float, &minVal, &maxVal);
+    
+    // avoid division by zero if image is solid color
+    if (maxVal - minVal > 1e-5) {
+        image_float.convertTo(normalised, CV_8UC1, 255.0 / (maxVal - minVal), -minVal * 255.0 / (maxVal - minVal));
+    } else {
+        normalised = cv::Mat::zeros(out_height, out_width, CV_8UC1);
+    }
+
+    bool success = cv::imwrite(path_to_file_with_filename, normalised);
+    if(!success){
+        throw std::runtime_error("Failed to save image to: " + path_to_file_with_filename);
+    } else {
+        std::cout << "Image saved to: " << path_to_file_with_filename << std::endl;
+    }
+}
+
 
 void utils::printConvResult(std::vector<float>& output, int out_width, int out_height){
     std::cout << "Convolution Result: " << std::endl;

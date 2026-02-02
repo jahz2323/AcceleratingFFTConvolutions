@@ -2,12 +2,6 @@
 #include <string>
 #include "convolution_test.cuh"
 
-enum class TestMode {
-    CONVOLUTION,
-    SFFT,
-    CUSTOM_OPS,
-    GPUSFFT
-};
 
 /**
     @brief Entry for CUDA operation testing 
@@ -29,7 +23,14 @@ int main(int argc, char* argv[]){
     if (mode == "test_conv") {
         // Call convolution test function
         std::cout << "Running convolution tests..." << std::endl;
-        convolution_test::convolve();
+        std::string test_type = argv[2];
+        if(test_type != "image" && test_type != "random") {
+            std::cerr << "Please specify test type:" << std::endl;
+            std::cerr << "image: for image convolution test" << std::endl;
+            std::cerr << "random: for random data convolution test" << std::endl;
+            return 1;
+        }
+        convolution_test::convolve(argv);
     } else if (mode == "test_sfft") {
         // Call SFFT test function
         std::cout << "Running SFFT tests..." << std::endl;

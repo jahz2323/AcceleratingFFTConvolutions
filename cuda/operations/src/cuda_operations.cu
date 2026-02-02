@@ -19,6 +19,9 @@
     cusFFT Conv 
 **/
 
+
+
+
 /**
     * @brief 2D Convolution CUDA kernel
     @NOTE: 
@@ -422,9 +425,10 @@ void cuda_operations::Optimised2DFFTConv(int w, int h, cuComplex *input, cuCompl
 
     // Shared memory has to fit 2*Entire block size for ping pong buffering
     size_t sharedSize = 2* block.x * block.y * sizeof(cuComplex);
-    // CHECK IF SIZE IS WITHIN LIMITS
+    // CHECK IF SIZE IS WITHIN LIMITS - hit limit for 
     if (sharedSize > MAX_SHARED_MEM){
-        std::cerr << "Error: Shared memory size exceeds limit!" << std::endl;
+        // std::cerr << "Error: Shared memory size exceeds limit! at:"<< sharedSize << std::endl;
+        std::cout << "WARNING: Shared memory size exceeds limit! GO back to cuFFT implementation." << std::endl;
         return;
     } 
     //Scratch buffer for transpose

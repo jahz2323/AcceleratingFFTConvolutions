@@ -61,13 +61,16 @@ void convolution_test::test1DConvolution(){
     torch 2conv
     custom 2dfftconv
 **/
+template<bool image_test>
 void convolution_test::test2DConvolution(
     int test_input_height,
     int test_input_width,
     int test_filter_height,
     int test_filter_width,
     int test_stride,
-    int test_padding
+    int test_padding,
+    cv::Mat test_image, 
+    cv::Mat test_filter
     ){
     std ::cout << "Running 2D Convolution Test..." << std::endl;
 
@@ -92,14 +95,36 @@ void convolution_test::test2DConvolution(
     int out_height = ((in_height - filter_height + 2 * padding) / stride) + 1;
 
     // generate random input and filter
+    
     std::vector<float> h_input(in_width * in_height);
     std::vector<float> h_filter(filter_width * filter_height);
-    for (int i = 0; i < in_width * in_height; ++i) {
+    if(!image_test){
+        std::cout << "Generating random input and filter..." << std::endl;
+        for (int i = 0; i < in_width * in_height; ++i) {
         h_input[i] = static_cast<float>(rand() % 10); // values between 0 and 9
-    }
-    for (int i = 0; i < filter_width * filter_height; ++i) {
+        }
+        for (int i = 0; i < filter_width * filter_height; ++i) {
         h_filter[i] = static_cast<float>(rand() % 3 - 1); // values between -1 and 1
-    }   
+        }
+    }
+    else{
+        std::cout << "Using provided image and filter for input..." << std::endl;
+        // Convert cv::Mat to std::vector<float> for input
+        h_input.resize(in_width * in_height);
+        for (int i = 0; i < in_height; ++i) {
+            for (int j = 0; j < in_width; ++j) {
+                h_input[i * in_width + j] = static_cast<float>(test_image.at<uchar>(i, j));
+            }
+        }
+        // Convert cv::Mat to std::vector<float> for filter
+        h_filter.resize(filter_width * filter_height);
+        for (int i = 0; i < filter_height; ++i) {
+            for (int j = 0; j < filter_width; ++j) {
+                h_filter[i * filter_width + j] = static_cast<float>(test_filter.at<float>(i, j));
+            }
+        }
+    }
+    
     std::vector<float> h_output(out_width * out_height, 0.0f);
 
     // Create clone of input, filter and out for Spectral method 
@@ -188,9 +213,9 @@ void convolution_test::test2DConvolution(
     cudaMemcpy(d_saved_padded_filter, d_padded_filter, fft_h * fft_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // DEBUG: Check CuComplex pointers 
-    utils::checkcuComplexArray(d_padded_input, fft_w, fft_h, "Padded Input");
-    utils::checkcuComplexArray(d_padded_filter, fft_w, fft_h, "Padded Filter");
-    utils::checkcuComplexArray(d_padded_output, fft_w, fft_h, "Padded Output");
+    // utils::checkcuComplexArray(d_padded_input, fft_w, fft_h, "Padded Input");
+    // utils::checkcuComplexArray(d_padded_filter, fft_w, fft_h, "Padded Filter");
+    // utils::checkcuComplexArray(d_padded_output, fft_w, fft_h, "Padded Output");
     /**
         @note: Custom 2D Convolution
         DO NOT MODIFY DIMENSIONS HERE
@@ -235,7 +260,7 @@ void convolution_test::test2DConvolution(
     //print output
     std:: cout << "matrix dimensions: " << out_height << " x " << out_width << std::endl;
     std::cout << "Convolution Output: " << std::endl;
-    utils::printConvResult(h_output, out_width, out_height);
+    //utils::printConvResult(h_output, out_width, out_height);
     /**
         @note: End of Custom 2D Convolution
     */
@@ -275,9 +300,6 @@ void convolution_test::test2DConvolution(
     }     
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    std::cout << "torchConv2d_result : " << std::endl;
-    std::cout << torchConv2d_result << std::endl;
-
     cudaEventElapsedTime(&torch_conv2d_milliseconds, start, stop);
     std::cout << "Time: " << torch_conv2d_milliseconds << " ms" << std::endl;
 
@@ -398,7 +420,7 @@ void convolution_test::test2DConvolution(
 
     // Print the spectral output
     std::cout << "Optimised FFT Conv2D Output : " << std::endl;
-    utils::printConvResult(optimised_spectral_output, out_width, out_height);
+    //utils::printConvResult(optimised_spectral_output, out_width, out_height);
     
     /**
         @note cuFFTConv Test
@@ -428,10 +450,12 @@ void convolution_test::test2DConvolution(
     );
     cudaDeviceSynchronize();
 
-    // refresh scratch pads
-    cudaMemcpy(d_input_scratch, d_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_filter_scratch, d_padded_filter, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-
+    // refresh input and filter tensors
+    cudaMemcpy(d_input_scratch, d_saved_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_filter_scratch, d_saved_padded_filter, fft_w * fft_h* sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_padded_output, d_saved_padded_input, fft_w * fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cudaDeviceSynchronize();
+ 
     // Start Timer
     cudaEventRecord(start);
     // RUN KERNEL
@@ -493,49 +517,6 @@ void convolution_test::test2DConvolution(
     std::cout << "2D Convolution test executed." << std::endl;
 
     
-    // write results to result_file 
-    /**
-        Conv_Method | Input_Dimensions | Filter_Dimensions | Stride | Padding | Time_ms 
-    */
-    // std::filesystem::path root = std::filesystem::current_path().parent_path().parent_path().parent_path();
-    // std::string path_to_results = "/data/measurements/";
-    // std::string result_file = "512.csv";
-    // std::vector<std::string> csv_content = {
-    //     "Custom_2DConv",
-    //     std::to_string(in_height) + "x" + std::to_string(in_width),
-    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
-    //     std::to_string(stride),
-    //     std::to_string(padding),
-    //     std::to_string(custom_conv2d_milliseconds),
-    //     "Torch_Conv2D",
-    //     std::to_string(in_height) + "x" + std::to_string(in_width),
-    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
-    //     std::to_string(stride),
-    //     std::to_string(padding),
-    //     std::to_string(torch_conv2d_milliseconds),
-    //     "Spectral_2DFFTConv",
-    //     std::to_string(in_height) + "x" + std::to_string(in_width),
-    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
-    //     std::to_string(stride),
-    //     std::to_string(padding),
-    //     std::to_string(spectral_conv2d_milliseconds),
-    //     "OptimisedSharedMemory_2DFFTConv",
-    //     std::to_string(in_height) + "x" + std::to_string(in_width),
-    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
-    //     std::to_string(stride),
-    //     std::to_string(padding),
-    //     std::to_string(shared_memory_spectral_conv2d_milliseconds),
-    //     "CuFFT_2DConv",
-    //     std::to_string(in_height) + "x" + std::to_string(in_width),
-    //     std::to_string(filter_height) + "x" +  std::to_string(filter_width),
-    //     std::to_string(stride),
-    //     std::to_string(padding),
-    //     std::to_string(cuFFT_conv2d_milliseconds)
-    // };
-    // std::string entire_path = root.string() + path_to_results + result_file;
-    // utils::writeCSV(entire_path, csv_content);
-
-
     cudaError_t err_final = cudaGetLastError();
     if (err_final != cudaSuccess) {
         std::cerr << "Post-test CUDA error: " << cudaGetErrorString(err_final) << std::endl;
@@ -563,43 +544,168 @@ void convolution_test::test2DConvolution(
     );
 
     // Print MSE results
-    std::cout << "Mean Squared Error between Custom 2D Conv and Spectral 2D FFT Conv: " << mse << std::endl;
-    std::cout << "Mean Squared Error between Custom 2D Conv and Optimised Spectral 2D FFT Conv: " << mse_optimised << std::endl;
-    std::cout << "Mean Squared Error between Custom 2D Conv and cuFFT 2D Conv: " << mse_cufft << std::endl;
+    // std::cout << "Mean Squared Error between Custom 2D Conv and Spectral 2D FFT Conv: " << mse << std::endl;
+    // std::cout << "Mean Squared Error between Custom 2D Conv and Optimised Spectral 2D FFT Conv: " << mse_optimised << std::endl;
+    // std::cout << "Mean Squared Error between Custom 2D Conv and cuFFT 2D Conv: " << mse_cufft << std::endl;
+
+
+    // write results to result_file 
+    /**
+        Conv_Method | Input_Dimensions | Filter_Dimensions | Stride | Padding | Time_ms 
+    */
+    std::filesystem::path root = std::filesystem::current_path().parent_path().parent_path().parent_path();
+    std::string path_to_results = "/data/measurements/";
+    std::string test_name = image_test ? "image_" + std::to_string(in_height) + "x" + std::to_string(in_width) 
+    : "random_test" + std::to_string(in_height) + "x" + std::to_string(in_width) + "_" + std::to_string(filter_height) + "x" + std::to_string(filter_width);
+    std::string result_file = test_name + "_2DConv_results_Sobel.csv";
+    
+    std::vector<std::string> Runtime_csv_header = {
+        "Conv_Method",
+        "Input_Dimensions",
+        "Filter_Dimensions",
+        "Stride",
+        "Padding",
+        "Time_ms"
+    };
+    std::vector<std::string> Runtime_csv_content = {
+        "Custom_2DConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(stride),
+        std::to_string(padding),
+        std::to_string(custom_conv2d_milliseconds),
+        "Torch_Conv2D",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(stride),
+        std::to_string(padding),
+        std::to_string(torch_conv2d_milliseconds),
+        "Spectral_2DFFTConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(stride),
+        std::to_string(padding),
+        std::to_string(spectral_conv2d_milliseconds),
+        "OptimisedSharedMemory_2DFFTConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(stride),
+        std::to_string(padding),
+        std::to_string(shared_memory_spectral_conv2d_milliseconds),
+        "CuFFT_2DConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(stride),
+        std::to_string(padding),
+        std::to_string(cuFFT_conv2d_milliseconds)
+    };
+    std::string Runtime_entire_path = root.string() + path_to_results + result_file;
+    utils::writeCSV(Runtime_entire_path, Runtime_csv_content, Runtime_csv_header);
+
+    // MSE Results
+    std::vector<std::string> mse_csv_header = {
+        "Method", 
+        "Input_Dimensions",
+        "Filter_Dimensions",
+        "MSE_ERROR_VS_Custom_2DConv"
+
+    };
+    std::vector<std::string> mse_csv_content = {
+        "Spectral_2DFFTConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(mse),
+        "OptimisedSharedMemory_2DFFTConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(mse_optimised),
+        "CuFFT_2DConv",
+        std::to_string(in_height) + "x" + std::to_string(in_width),
+        std::to_string(filter_height) + "x" +  std::to_string(filter_width),
+        std::to_string(mse_cufft)
+    };
+    std::string error_result_file = test_name + "_2DConv_MSE_results_sobel.csv";
+    std::string error_entire_path = root.string() + path_to_results + error_result_file;
+    utils::writeCSV(error_entire_path, mse_csv_content, mse_csv_header);
+    if(image_test){
+        // save output images of each method for visual comparison
+        utils::saveOutputImage("custom_2dconv_output_sobel.png", h_output_vec, out_width, out_height);
+        utils::saveOutputImage("spectral_2dfftconv_output_sobel.png", spectral_output_vec, out_width, out_height);
+        utils::saveOutputImage("optimised_spectral_2dfftconv_output_sobel.png", optimised_spectral_output_vec, out_width, out_height);
+        utils::saveOutputImage("cufft_2dconv_output_sobel.png", spectral_output_cufft, out_width, out_height);
+    }
 }
 
 
 /**
     @brief Main function to run convolution tests
 **/
-void convolution_test::convolve(){ 
+void convolution_test::convolve(char* argv[]){ 
     std::cout << "Starting various convolution tests..." << std::endl;
     //convolution_test::test1DConvolution();
     // explodes for conv over 16 need to fix 
     // Alex net convs are 32x32,11x11,5x5,3x3
-    // std::vector<int> input_dims = {3, 5 , 7, 11, 16, 18, 20, 22 ,24, 28, 64, 128};
-    // std::vector<int> filter_dims = {3, 5, 7, 11, 16, 18, 20, 22, 24, 28, 64, 128};
+
     // provide vectors 128, 256, 512, 1024
-    std::vector<int> input_dims = {11};
-    std::vector<int> filter_dims = {5};
+    // Input dims to test {32(CIFAR-10), 64, 128, 224 (ImageNet), 256, 512, 1024}
+    // Filter dims to test {5, 16, 32, 64, 128, 256, 512, 1024}
+    
+   
+    TestMode mode = parseMode(argv[2]);
+    
+    std::vector<int> input_dims = {2048};
+    std::vector<int> filter_dims = {3,5,11,16,32,64,128,256,512,1024,2048};
     int stride = 1;
     int padding = 0;
-    for (const auto& in_dim : input_dims){
-        for (const auto& filter_dim : filter_dims){
-            if(filter_dim > in_dim) continue; // skip invalid cases
 
-            // clear cache before each test
-            //cudaDeviceReset();
-            convolution_test::test2DConvolution(in_dim, in_dim, filter_dim, filter_dim, stride, padding);
-            cudaError_t err = cudaDeviceSynchronize();
-            if (err != cudaSuccess) {
-                std::cerr << "Test Failed for Input Dim: " << in_dim << " Filter Dim: " << filter_dim 
-                          << " Error: " << cudaGetErrorString(err) << std::endl;
-            }   else {
-                std::cout << "Test Passed for Input Dim: " << in_dim << " Filter Dim: " << filter_dim << std::endl;
+    if (mode == TestMode::Image) {
+        std::cout << "Running 2D Convolution Test on Image..." << std::endl;
+        // Load image using OpenCV
+        std::string data_path = std::filesystem::current_path().parent_path().parent_path().parent_path().string() + "/data/userdata/";
+
+        std::string image_path =  data_path + "cat.png";
+        cv::Mat image = cv::imread(image_path, cv::IMREAD_GRAYSCALE);
+        if (image.empty()) {
+            std::cerr << "Error: Could not load image at " << image_path << std::endl;
+            return;
+        }
+        std::cout << "Image loaded with dimensions: " << image.rows << " x " << image.cols << std::endl;
+        // Define a sample filter (e.g., edge detection)
+        cv::Mat filter = (cv::Mat_<float>(3,3) <<
+            -1, 0, 1,
+            -2,  0, 2,
+            -1, 0, 1
+        );
+        // Run 2D convolution test with the image and filter
+        convolution_test::test2DConvolution<true>(
+            image.rows,
+            image.cols,
+            filter.rows,
+            filter.cols,
+            stride,
+            padding,
+            image,
+            filter
+        );
+    }
+    else{
+        std::cout << "Running 2D Convolution Tests on Random Inputs..." << std::endl;
+        for(const auto& in_dim : input_dims){
+            for(const auto& filter_dim : filter_dims){
+                convolution_test::test2DConvolution<false>(
+                    in_dim,
+                    in_dim,
+                    filter_dim,
+                    filter_dim,
+                    stride,
+                    padding,
+                    cv::Mat(),
+                    cv::Mat()
+                );
             }
         }
     }
+   
     //convolution_test::test2DConvolution(128,128, 64, 64, stride, padding); // Input {3,6,11,} filter{3, 5, 7} 
     std::cout << "All convolution tests completed." << std::endl;
 }
