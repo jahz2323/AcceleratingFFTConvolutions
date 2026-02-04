@@ -9,9 +9,10 @@
 #include <thread> // might parallelize data loading
 #include <chrono>
 #include <dlfcn.h>
+#include <filesystem>
 #include "dataprep.hpp" 
+#include "train.hpp"
 #include "AlexNet.hpp"
-
 
 namespace inference {
     /**
@@ -23,5 +24,5 @@ namespace inference {
         @param data_path: path to inference image file
         @param full_label_file_path: path to cifar10 label file (text file with labels)
     */
-    void runInference(const std::string& model_path, const std::string& input_data, const std::string& full_label_file_path); 
+    void runInference(const std::string& model_path); 
 } // namespace inference

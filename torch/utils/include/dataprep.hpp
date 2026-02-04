@@ -48,7 +48,7 @@ namespace DataHandling {
  * @brief Dataset class to load Key
  TODO: Change to template torch::data::Example<>>
  */
-class HandKeypoint : public torch::data::datasets::Dataset<HandKeypoint, HandSample> {
+class HandKeypoint : public torch::data::datasets::Dataset<HandKeypoint, torch::data::Example<>> {
 private:  
     std::string img_dir;
     std::string label_dir;
@@ -56,9 +56,9 @@ private:
     bool transform;     
 public: 
     HandKeypoint(std::string img_directory, std::string label_directory, bool apply_transform=false);
-    HandSample get(size_t index) override;
-    inline torch::optional<size_t> size() const override {return file_names.size();}
-    inline HandSample getItem(size_t index) {return get(index);}
+    torch::data::Example<> get(size_t index) override;
+    inline torch::optional<size_t> size() const override {return img_file_names.size();}
+    
 };
 
 /**

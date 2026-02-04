@@ -13,6 +13,7 @@ cv::Mat DataHandling::torchTensortoCVMat(const torch::Tensor& tensor){
     return mat.clone(); // return a clone to ensure data safety
 }
 
+
 /**
     @brief Helper to load image with opencv and convert to torch::Tensor, on device if available 
     @param img_path: path to image file
@@ -122,21 +123,26 @@ EMNISTDataset::EMNISTDataset(const std::string& image_path, const std::string& l
 HandKeypoint::HandKeypoint (std::string img_directory, std::string label_directory, bool apply_transform) : img_dir(img_directory), label_dir(label_directory), transform(apply_transform) {
     // Populate file_names vector with image file names from img_dir
     for (const auto& entry : std::filesystem::directory_iterator(img_dir)) {
-        file_names.push_back(entry.path().filename().string());
+        img_file_names.push_back(entry.path().filename().string());
     }
 }
-HandSample HandKeypoint::get(size_t index) {
+torch::data::Example<> HandKeypoint::get(size_t index) {
     // Load image
-    std::string img_path = img_dir + "/" + file_names[index];
+    std::string img_path = img_dir + "/" + img_file_names[index];
     cv::Mat img = cv::imread(img_path);
 
-    // Load keypoints
-    auto start_pos = file_names[index].find(".");
-    std::string label_path = label_dir + "/" + file_names[index].erase(start_pos, start_pos + 3) + ".txt";
-    // std::cout << "Loading image: " << img_path << " and label: " << label_path << std::endl;
+   //Safe pathing - 
+   std::string filename = img_file_names[index];
+   size_t last_dot = filename.find_last_of(".");
+
+   // Create stem of filename
+   std::string stem = (last_dot == std::string::npos) ? filename : filename.substr(0, last_dot);
+   std::string label_path = label_dir + "/" + stem + ".txt";
+   
     std::ifstream label_file(label_path);
     
     // store as torch::Tensor target
+    torch::Tensor image_tensor;
     torch::Tensor bounding_box;
     torch::Tensor keypoints;
     if (label_file.is_open()) {
@@ -154,8 +160,8 @@ HandSample HandKeypoint::get(size_t index) {
         keypoints = torch::from_blob(keypoint_values->data()+5, {21, 3}, torch::kFloat32).clone();
         
         /* Print out */
-        std::cout << "Bounding box tensor: " << bounding_box << std::endl;
-        std::cout << "Keypoints tensor: " << keypoints << std::endl;
+        //std::cout << "Bounding box tensor: " << bounding_box << std::endl;
+        //std::cout << "Keypoints tensor: " << keypoints << std::endl;
 
         label_file.close(); // close the file after reading
     } else {
@@ -167,9 +173,13 @@ HandSample HandKeypoint::get(size_t index) {
         // Example transformation: convert to grayscale
         cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
     }
-
+    // Convert cv::Mat to torch::Tensor
+    image_tensor = torch::from_blob(img.data, {img.rows, img.cols, img.channels()}, torch::kUInt8);
+    image_tensor = image_tensor.permute({2,0,1}); // change to CxHxW
+    image_tensor = image_tensor.to(torch::kFloat32).div(255.0); // normalize to [0,1]
+    
    
-    return HandSample{img, keypoints, bounding_box};
+    return {image_tensor, keypoints};
 
 };
 
