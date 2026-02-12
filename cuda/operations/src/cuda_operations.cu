@@ -5,9 +5,12 @@
 #include <string>
 #include <vector>
 
+
 #include "cuda_operations.cuh"
 #include "utils.cuh"
 
+// For NVTX profiling
+#include <nvtx3/nvToolsExt.h>
 /**
  * @file cuda_operations.cu
  * @brief CUDA implementation of convolution operations 
@@ -18,9 +21,6 @@
     FFTW Conv 
     cusFFT Conv 
 **/
-
-
-
 
 /**
     * @brief 2D Convolution CUDA kernel
@@ -93,15 +93,11 @@ __global__ void cuda_operations::OptimisedSharedMemory1DFFT(int width, cuComplex
     In place FFT butterfly - each thread calculates its own butterfly operation
     ---------------------------------------------
 
-
     utilise shared_memory to sub divide the FFT computation 
     - 32 rows per block
     - for 2nd pass its 32 columns per block
 
-    use ping pong buffering in shared memory to avoid bank conflicts (Race Conditions)
-    shared_memory = (2 * width * rowsPerBlock) * sizeof(cuComplex)
-    ping - first half of shared memory
-    pong - second half of shared memory
+    use inplace access - pingpong uses too much memory
 
     Steps: 
     1. Load data from global memory to shared memory (coalesced)
@@ -119,12 +115,15 @@ __global__ void cuda_operations::OptimisedSharedMemory1DFFT(int width, cuComplex
 
     if (tx >= width || row >= width)  return; // bounds check threadindex in x_dim should be less than width
    
-
     // Step 1. Read in global memory to shared memory - coalesced
-    cuComplex *ping = &shared_input_row[( ty * 2) * width ];
-    cuComplex *pong = &shared_input_row[( ty * 2 + 1) * width];  
-
-    ping[tx] = input[row * width + tx];
+    if (isRowWise){
+        // row-wise FFT - read row into shared memory
+        shared_input_row[tx] = input[row * width + tx];
+    }
+    else {
+        // column-wise FFT - read column into shared memory
+        shared_input_row[tx] = input[tx * width + row];
+    }
     __syncthreads();
 
     /**
@@ -142,9 +141,9 @@ __global__ void cuda_operations::OptimisedSharedMemory1DFFT(int width, cuComplex
     unsigned int rev_n = __brev(tx) >> (32 - stages);
     if(rev_n > tx && tx < width){
         // swap
-        cuComplex temp = ping[tx];
-        ping[tx] = ping[rev_n];
-        ping[rev_n] = temp;
+        cuComplex temp = shared_input_row[tx];
+        shared_input_row[tx] = shared_input_row[rev_n];
+        shared_input_row[rev_n] = temp;
 
     }
     __syncthreads();
@@ -159,7 +158,8 @@ __global__ void cuda_operations::OptimisedSharedMemory1DFFT(int width, cuComplex
         int m  = 1 << s; // butterfly size
         int half_m = m >> 1; // distance between wings
 
-      
+        // Only first half of threads in the block are active for each stage as they compute the top wing of the butterfly, 
+        // the bottom wing is computed by indexing with + half_m
         if ((tx < (width / 2))) { 
             int b_group = tx / half_m;  // which group of butterflies
             int b_j = tx % half_m;  // index within the butterfly
@@ -168,27 +168,23 @@ __global__ void cuda_operations::OptimisedSharedMemory1DFFT(int width, cuComplex
 
 
             // compute twiddle factor - 
-            float angle = (isInverse ? -2.0f : 2.0f) * 3.14159265359f * b_j  / m;
+            float angle = (isInverse ? -2.0f : 2.0f) * 3.141592653589793238462643383279502884f * b_j  / m;
             cuComplex w = make_cuComplex(cosf(angle), sinf(angle));
 
             // perform butterfly
-            cuComplex u = ping[i];
-            cuComplex t = cuCmulf(w, ping[k]);
+            cuComplex u = shared_input_row[i]; 
+            cuComplex t = cuCmulf(w, shared_input_row[k]);
 
-            pong[i] = cuCaddf(u, t); // A = a ( wnk * b)
-            pong[k] = cuCsubf(u, t); // B = a - (wnk * b)
+            // write results back to shared memory
+            shared_input_row[i] = cuCaddf(u, t); 
+            shared_input_row[k] = cuCsubf(u, t);
         }
         __syncthreads();
-        
-        // swap ping pong
-        cuComplex* temp = ping;
-        ping = pong;
-        pong = temp;
     }
 
     // Step 4: transpose : write result to global[idy + idx*w] from shared memory
     // Not coalesced write, but necessary for column-wise FFT
-    cuComplex fft_value = ping[tx];
+    cuComplex fft_value = shared_input_row[tx]; // after final stage, the result is in shared_input_row due to ping-pong swapping
     if(isInverse){
         float scale = 1.0f / width;
         fft_value.x *= scale;
@@ -219,7 +215,7 @@ __global__ void cuda_operations::_1D_DFT(int in_width, cuComplex* input, cuCompl
     if(idx >= in_width) return;
     cuComplex sum = make_cuComplex(0.0f, 0.0f);
     for(int n = 0; n < in_width; n++){
-        float angle = -2.0f * 3.14159265359f * n * idx / in_width;
+        float angle = -2.0f * 3.141592653589793238462643383279502884f * n * idx / in_width;
         cuComplex w = make_cuComplex(cosf(angle), sinf(angle));
         sum = cuCaddf(sum, cuCmulf(input[n], w));
     }
@@ -239,7 +235,7 @@ __global__ void cuda_operations::_1D_IDFT(int in_width, cuComplex* input, cuComp
     cuComplex sum = make_cuComplex(0.0f, 0.0f);
 
     for(int k = 0; k < in_width; k++){
-        float angle = 2.0f * 3.14159265359f  * idx * k / in_width; // check if macro is available 
+        float angle = 2.0f * 3.141592653589793238462643383279502884f  * idx * k / in_width; // check if macro is available 
         cuComplex w = make_cuComplex(cosf(angle), sinf(angle));
         sum = cuCaddf(sum, cuCmulf(input[k], w));
     }
@@ -266,7 +262,7 @@ __global__ void cuda_operations::_1D_FFT(int width, int height, cuComplex* input
     int stages = static_cast<int>(log2f((float)width));
     for(int s = 1; s <= stages; s++){
         int m = 1 << s; // 2^s
-        cuComplex wm = make_cuComplex(cosf(-2.0f * 3.14159265359f / m), sinf(-2.0f * 3.14159265359f / m));
+        cuComplex wm = make_cuComplex(cosf(-2.0f * 3.141592653589793238462643383279502884f / m), sinf(-2.0f * 3.141592653589793238462643383279502884f / m));
         for(int k = 0; k < width; k += m){
             cuComplex w = make_cuComplex(1.0f, 0.0f);
             for(int j = 0; j < m / 2; j++){
@@ -297,7 +293,7 @@ __global__ void cuda_operations::_1D_IFFT(int width, int height, cuComplex* inpu
     // IFFT computation
     for(int s = 1; s <= log2f(width); s++){
         int m = 1 << s; // 2^s
-        cuComplex wm = make_cuComplex(cosf(2.0f * 3.14159265359f / m), sinf(2.0f * 3.14159265359f / m));
+        cuComplex wm = make_cuComplex(cosf(2.0f * 3.141592653589793238462643383279502884f / m), sinf(2.0f * 3.141592653589793238462643383279502884f / m));
         for(int k = 0; k < width; k += m){
             cuComplex w = make_cuComplex(1.0f, 0.0f);
             for(int j = 0; j < m / 2; j++){
@@ -345,7 +341,8 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
                            cuComplex* input, cuComplex* filters, cuComplex* output) {
     //Implementation of 2D FFT Convolution kernel
     //dim3 block(w + fw -1 , h + fh -1);
-    
+
+    nvtxRangePushA("2D_FFTConv");
     //max thread dispatch per block 1024
     int maxThreadsPerBlock = 32; // 32x32 = 1024
     // dim3 block(fw, fh);
@@ -361,6 +358,7 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
 
     // Steps:
     // 1. Compute 2D FFT of input
+    nvtxRangePushA("InputFFT");
     cuda_operations::bitreversal<<<grid, block>>>(w, h, input);
     _1D_FFT<<<fft_grid, fft_block>>>(w, h, input, input);
     
@@ -371,8 +369,10 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     // perform row-wise FFT again to complete 2D FFT
     cuda_operations::bitreversal<<<grid, block>>>(h, w, input);
     _1D_FFT<<<fft_grid, fft_block>>>(h, w, input, input);
+    nvtxRangePop(); // FFT_2D_FFTConv
 
     // 2. Compute 2D FFT of filter
+    nvtxRangePushA("FilterFFT");
     cuda_operations::bitreversal<<<grid, block>>>(fw, fh, filters);
     _1D_FFT<<<fft_grid, fft_block>>>(fw, fh, filters, filters);
     
@@ -383,13 +383,17 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     // perform row-wise FFT again to complete 2D FFT
     cuda_operations::bitreversal<<<grid, block>>>(fh, fw, filters);
     _1D_FFT<<<fft_grid, fft_block>>>(fh, fw, filters, filters);
+    nvtxRangePop(); // FilterFFT
     
     // 3. Element-wise multiply the two FFT results 
     int output_width = w; // for same conv - Basic FFTConv 
     int output_height = h;
 
+    nvtxRangePushA("ElementWiseMultiply_FFTConv");
     elementWiseMultiplyComplex<false><<<grid,block>>>(output_width, output_height, input, filters, output);
+    nvtxRangePop(); // ElementWiseMultiply_FFTConv
 
+    nvtxRangePushA("IFFT_2D_FFTConv");
     // 4. Compute inverse 2D FFT of the product to get convolved output
     cuda_operations::bitreversal<<<grid, block>>>(output_width, output_height, output);
     _1D_IFFT<<<fft_grid, fft_block>>>(output_width, output_height, output, output);
@@ -401,8 +405,10 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     // perform row-wise IFFT again to complete 2D IFFT
     cuda_operations::bitreversal<<<grid, block>>>(output_height, output_width, output);
     _1D_IFFT<<<fft_grid, fft_block>>>(output_height, output_width, output, output);
+    nvtxRangePop(); // IFFT_2D_FFTConv
 
     cudaFree(d_temp);
+    nvtxRangePop();
 }
 
 #define MAX_SHARED_MEM 49152 // 48KB
@@ -419,18 +425,20 @@ void cuda_operations::Optimised2DFFTConv(int w, int h, cuComplex *input, cuCompl
     //FIRST PASS: ROW-WISE FFT
     //SECOND PASS: COLUMN-WISE FFT
     
-    int rowsPerBlock = 32; // each block processes 32 rows
+    int rowsPerBlock = 16; // each block processes 16 rows
     dim3 block(w, rowsPerBlock);
     dim3 grid1(1, (w + rowsPerBlock -1) / rowsPerBlock);
 
-    // Shared memory has to fit 2*Entire block size for ping pong buffering
-    size_t sharedSize = 2* block.x * block.y * sizeof(cuComplex);
+    // Shared memory has to fit 1 block of data for the FFT computation - 16 rows of w elements each, complex numbers
+    size_t sharedSize = block.x * block.y * sizeof(cuComplex); 
+    
     // CHECK IF SIZE IS WITHIN LIMITS - hit limit for 
     if (sharedSize > MAX_SHARED_MEM){
         // std::cerr << "Error: Shared memory size exceeds limit! at:"<< sharedSize << std::endl;
         std::cout << "WARNING: Shared memory size exceeds limit! GO back to cuFFT implementation." << std::endl;
         return;
     } 
+
     //Scratch buffer for transpose
     cuComplex* d_temp;
     cudaMalloc(&d_temp, w * h * sizeof(cuComplex));
@@ -439,7 +447,7 @@ void cuda_operations::Optimised2DFFTConv(int w, int h, cuComplex *input, cuCompl
     std::vector<float> fft_output(w * h * 2); // real + imag
     cudaMemcpy(fft_output.data(), input, long_w * long_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
     std::cout << "Input before FFT: " << std::endl;
-    //utils::printConvResult(fft_output, w, h);
+    utils::printConvResult(fft_output, w, h);
 
     //Pass1: Row-wise FFT
     OptimisedSharedMemory1DFFT<false, false><<<grid1, block, sharedSize>>>(long_w, input, d_temp);
@@ -448,20 +456,20 @@ void cuda_operations::Optimised2DFFTConv(int w, int h, cuComplex *input, cuCompl
 
     //check output from d_temp and copy to vector float
     
-    //cudaMemcpy(fft_output.data(), input, w * h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    // // Print FFT output for debugging
-    // std::cout << "FFT Output after 2D FFT: " << std::endl;
-    // utils::printConvResult(fft_output, w, h);
+    cudaMemcpy(fft_output.data(), input, w * h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    // Print FFT output for debugging
+    std::cout << "FFT Output after 2D FFT: " << std::endl;
+    utils::printConvResult(fft_output, w, h);
     
     // test inverse of input FFT to get back original input
     //Pass1: Row-wise IFFT
-    // OptimisedSharedMemory1DFFT<true, false><<<grid1, block, sharedSize>>>(long_w, input, d_temp);
-    // //Pass2: Column-wise IFFT
-    // OptimisedSharedMemory1DFFT<true, false><<<grid1, block, sharedSize>>>(long_h, d_temp, input);
-    // // Copy back to fft_output for checking
-    // cudaMemcpy(fft_output.data(), input, w * h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    // std::cout << "Input after IFFT (should match original input): " << std::endl;
-    // utils::printConvResult(fft_output, w, h);
+    OptimisedSharedMemory1DFFT<true, false><<<grid1, block, sharedSize>>>(long_w, input, d_temp);
+    //Pass2: Column-wise IFFT
+    OptimisedSharedMemory1DFFT<true, false><<<grid1, block, sharedSize>>>(long_h, d_temp, input);
+    // Copy back to fft_output for checking
+    cudaMemcpy(fft_output.data(), input, w * h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    std::cout << "Input after IFFT (should match original input): " << std::endl;
+    utils::printConvResult(fft_output, w, h);
 
     // Repeat for filter
     OptimisedSharedMemory1DFFT<false, false><<<grid1, block, sharedSize>>>(long_w, filter, d_temp);

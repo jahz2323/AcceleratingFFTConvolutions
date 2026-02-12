@@ -14,9 +14,9 @@ int main(int argc, char* argv[]){
         std::cerr << "Usage: " << argv[0] << " <mode> [additional arguments]" << std::endl;
         std::cerr << "Modes:" << std::endl;
         std::cerr << "test_conv" << std::endl;
-        std::cerr << "test_sfft" << std::endl;
         std::cerr << "test_custom_ops" << std::endl;
-        std::cerr << "test_gpusfft" << std::endl;
+        std::cerr << "benchmark" << std::endl;
+    
         return 1;
     }
     std::string mode = argv[1];
@@ -31,19 +31,15 @@ int main(int argc, char* argv[]){
             return 1;
         }
         convolution_test::convolve(argv);
-    } else if (mode == "test_sfft") {
-        // Call SFFT test function
-        std::cout << "Running SFFT tests..." << std::endl;
-        // sfft::runTests();
-    } else if (mode == "test_custom_ops") {
+    }
+    else if (mode == "test_custom_ops") {
         // Call custom operations test function
         std::cout << "Running custom operations tests..." << std::endl;
         // custom_ops::runTests();
-    } else if (mode == "test_gpusfft") {
-        // Call GPU-SFFT test function
-        std::cout << "Running GPU-SFFT tests..." << std::endl;
-        // gpusfft::runTests();
-    } 
+    } else if (mode == "benchmark") {
+        std::cout << "Running benchmarks..." << std::endl;
+        convolution_test::run_benchmarks();
+    }
     else {
         std::cerr << "Unknown mode: " << mode << std::endl;
         return 1;

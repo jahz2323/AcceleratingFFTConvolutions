@@ -1,8 +1,6 @@
 #include "utils.cuh"
 
 
-
-
 int utils::nextPowerOfTwo(int n){
     int count = 0;
     // First n in the below condition is for the case where n is 0
@@ -48,11 +46,12 @@ void utils::writeCSV(
     const std::vector<std::string> &headers
 ){
     std::ofstream file_to_write_to; 
+    //if file does not exist, create it and write headers
     file_to_write_to.open(path_to_file_with_filename, std::ios::out | std::ios::app);
     if(!file_to_write_to.is_open()){
-        throw std::runtime_error("Failed to open file: " + path_to_file_with_filename);
-        return;
+        throw std::runtime_error("Could not open file: " + path_to_file_with_filename);
     }
+    
     int col_count = headers.size();
     // check if header is already present
     file_to_write_to.seekp(0, std::ios::end);

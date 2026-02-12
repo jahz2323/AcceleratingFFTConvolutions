@@ -23,7 +23,10 @@ add_subdirectory(libs)
 
 
 # 3. Define executable
-add_executable(Cuda_app main.cpp)
+add_executable(Cuda_app 
+    main.cpp
+
+)
 
 # 4. Standards
 set_target_properties(Cuda_app PROPERTIES 
