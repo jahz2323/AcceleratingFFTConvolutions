@@ -1,59 +1,18 @@
 #include "dataprep.hpp"
 
-/* Source file to load Keypoint dataset*/
-KeypointDataset::KeypointDataset (std::string img_directory, std::string label_directory, bool apply_transform) : img_dir(img_directory), label_dir(label_directory), transform(apply_transform) {
-    // Populate file_names vector with image file names from img_dir
-    for (const auto& entry : std::filesystem::directory_iterator(img_dir)) {
-        file_names.push_back(entry.path().filename().string());
-    }
+
+cv::Mat DataHandling::torchTensortoCVMat(const torch::Tensor& tensor){
+    // Ensure tensor is on CPU and of type float32
+    torch::Tensor cpu_tensor = tensor.to(torch::kCPU).to(torch::kFloat32);
+    // Get dimensions
+    auto sizes = cpu_tensor.sizes();
+    int rows = sizes[0];
+    int cols = sizes[1];
+    // Create cv::Mat
+    cv::Mat mat(rows, cols, CV_32FC1, cpu_tensor.data_ptr<float>());
+    return mat.clone(); // return a clone to ensure data safety
 }
-HandSample KeypointDataset::get(size_t index) {
-    // Load image
-    std::string img_path = img_dir + "/" + file_names[index];
-    cv::Mat img = cv::imread(img_path);
 
-    // Load keypoints
-    auto start_pos = file_names[index].find(".");
-    std::string label_path = label_dir + "/" + file_names[index].erase(start_pos, start_pos + 3) + ".txt";
-    // std::cout << "Loading image: " << img_path << " and label: " << label_path << std::endl;
-    std::ifstream label_file(label_path);
-    
-    // store as torch::Tensor target
-    torch::Tensor bounding_box;
-    torch::Tensor keypoints;
-    if (label_file.is_open()) {
-        std::shared_ptr<std::vector<float>> keypoint_values = std::make_shared<std::vector<float>>();
-        float value;
-        while (label_file >> value) {
-            keypoint_values->push_back(value);
-        }
-        /* Convert list of keypoint values to torch tensor 
-            torch::Tensor bounding_box = [<class-index> <x> <y> <width> <height>]
-            torch::Tensor keypoints = [(skip first 4), {21 keypoints: (x, y, visibility)}]
-            class, centre_x, centre_y, width, height, kpx, pky visibility... kpx_n, kpy_n, visibility_n 
-        */
-        bounding_box = torch::from_blob(keypoint_values->data(), {5}, torch::kFloat32).clone(); 
-        keypoints = torch::from_blob(keypoint_values->data()+5, {21, 3}, torch::kFloat32).clone();
-        
-        /* Print out */
-        std::cout << "Bounding box tensor: " << bounding_box << std::endl;
-        std::cout << "Keypoints tensor: " << keypoints << std::endl;
-
-        label_file.close(); // close the file after reading
-    } else {
-        throw std::runtime_error("Could not open label file: " + label_path);
-    }
-    
-    // Apply transformations if needed
-    if (transform) {
-        // Example transformation: convert to grayscale
-        cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
-    }
-
-   
-    return HandSample{img, keypoints, bounding_box};
-
-};
 
 /**
     @brief Helper to load image with opencv and convert to torch::Tensor, on device if available 
@@ -108,6 +67,7 @@ void DataHandling::displayImage(cv::Mat img, const std::string& window_name, int
     if (k == 's') {
         cv::imwrite(window_name + ".png", img);
     }
+    cv::destroyWindow(window_name);
 }
 
 
@@ -157,3 +117,118 @@ EMNISTDataset::EMNISTDataset(const std::string& image_path, const std::string& l
 
     std::cout << "Successfully loaded " << num_items << " samples." << std::endl;
 }
+
+
+/* Source file to load Keypoint dataset*/
+HandKeypoint::HandKeypoint (std::string img_directory, std::string label_directory, bool apply_transform) : img_dir(img_directory), label_dir(label_directory), transform(apply_transform) {
+    // Populate file_names vector with image file names from img_dir
+    for (const auto& entry : std::filesystem::directory_iterator(img_dir)) {
+        img_file_names.push_back(entry.path().filename().string());
+    }
+}
+torch::data::Example<> HandKeypoint::get(size_t index) {
+    // Load image
+    std::string img_path = img_dir + "/" + img_file_names[index];
+    cv::Mat img = cv::imread(img_path);
+
+   //Safe pathing - 
+   std::string filename = img_file_names[index];
+   size_t last_dot = filename.find_last_of(".");
+
+   // Create stem of filename
+   std::string stem = (last_dot == std::string::npos) ? filename : filename.substr(0, last_dot);
+   std::string label_path = label_dir + "/" + stem + ".txt";
+   
+    std::ifstream label_file(label_path);
+    
+    // store as torch::Tensor target
+    torch::Tensor image_tensor;
+    torch::Tensor bounding_box;
+    torch::Tensor keypoints;
+    if (label_file.is_open()) {
+        std::shared_ptr<std::vector<float>> keypoint_values = std::make_shared<std::vector<float>>();
+        float value;
+        while (label_file >> value) {
+            keypoint_values->push_back(value);
+        }
+        /* Convert list of keypoint values to torch tensor 
+            torch::Tensor bounding_box = [<class-index> <x> <y> <width> <height>]
+            torch::Tensor keypoints = [(skip first 4), {21 keypoints: (x, y, visibility)}]
+            class, centre_x, centre_y, width, height, kpx, pky visibility... kpx_n, kpy_n, visibility_n 
+        */
+        bounding_box = torch::from_blob(keypoint_values->data(), {5}, torch::kFloat32).clone(); 
+        keypoints = torch::from_blob(keypoint_values->data()+5, {21, 3}, torch::kFloat32).clone();
+        
+        /* Print out */
+        //std::cout << "Bounding box tensor: " << bounding_box << std::endl;
+        //std::cout << "Keypoints tensor: " << keypoints << std::endl;
+
+        label_file.close(); // close the file after reading
+    } else {
+        throw std::runtime_error("Could not open label file: " + label_path);
+    }
+    
+    // Apply transformations if needed
+    if (transform) {
+        // Example transformation: convert to grayscale
+        cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
+    }
+    // Convert cv::Mat to torch::Tensor
+    image_tensor = torch::from_blob(img.data, {img.rows, img.cols, img.channels()}, torch::kUInt8);
+    image_tensor = image_tensor.permute({2,0,1}); // change to CxHxW
+    image_tensor = image_tensor.to(torch::kFloat32).div(255.0); // normalize to [0,1]
+    
+   
+    return {image_tensor, keypoints};
+
+};
+
+
+/**
+    @brief Load CIFAR binary file and populate dataset
+    @param path_dir: path to CIFAR binary file
+    return tensor containing std::vector of images and labels
+*/
+CIFARdata DataHandling::load_binary_file(const std::string& path_dir){
+    fs::path dir_path(path_dir);
+    if(!fs::exists(dir_path)){
+        throw std::runtime_error("Directory does not exist: " + path_dir);
+    }
+    std::streampos begin,end; 
+    std::ifstream file(dir_path.string(), std::ios::in | std::ios::binary);
+    if(!file.is_open()){
+        throw std::runtime_error("Could not open file: " + dir_path.string());
+    }
+    begin = file.tellg();
+    file.seekg(0, std::ios::end);
+    end = file.tellg();
+    size_t file_size = end - begin;
+    size_t num_entries = file_size / sizeof(CIFARBuffer);
+    std::cout << "Actual size of CIFARBuffer: " << sizeof(CIFARBuffer) << " bytes" << std::endl;
+    std::cout << "Number of entries in CIFAR binary file: " << num_entries << std::endl;
+
+    // Reset pointer to beginning
+    file.seekg(0, std::ios::beg);
+    CIFARdata cifar_data;
+
+    for(size_t i=0; i<num_entries; i++){
+        CIFARBuffer buffer = {0};
+        if(file.read(reinterpret_cast<char*>(&buffer), sizeof(CIFARBuffer))){
+            std::cout << "Read entry " << i << " with label: " << static_cast<int>(buffer.label) << std::endl;
+        }
+        else{
+            throw std::runtime_error("Error reading entry " + std::to_string(i)+ "Bytes read: " + std::to_string(file.gcount()));
+        }
+        // Comnvert Uint8_t data to torch::Tensor
+        torch::Tensor img_tensor = torch::from_blob(buffer.data, {3,32,32}, torch::kUInt8).to(torch::kFloat32).div(255.0).clone();
+        torch::Tensor label_tensor = torch::tensor(static_cast<int64_t>(buffer.label), torch::kInt64);
+        // Append to CIFARdata struct
+        
+        cifar_data.images.push_back(img_tensor);
+        cifar_data.labels.push_back(label_tensor);
+    }
+    file.close();
+    
+    return cifar_data;
+}
+

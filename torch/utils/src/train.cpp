@@ -1,49 +1,38 @@
 #include "train.hpp"
 
-
-void train::KeypointFunction(){ 
-    //std::filesystem::path curr_path = std::filesystem::current_path();
-    //std::cout << "Current path: " << curr_path << std::endl;
-    // /* Go back 3 dir and move to /hand_keypoint_dataset_26k/hand_keypoint_dataset_26k/ */
-    // std::filesystem::path root = curr_path.parent_path().parent_path().parent_path();
-    // std::filesystem::path data_dir = root.append(DATAPATH);
-    // /* Print out data_dir */
-    // std::cout << "Data directory: " << data_dir << std::endl;
-    // /* Define img_dir and train_label_dir */
-    // std::string train_img_dir = data_dir.string() + "images/train";
-    // std::string train_label_dir = data_dir.string() + "labels/train";
+HandKeypoint train::KeypointFunction(const std::string &DATAPATH="/data/hand_dataset/hand_keypoint_dataset_26k/hand_keypoint_dataset_26k/"){ 
+    std::filesystem::path curr_path = std::filesystem::current_path();
+    std::cout << "Current path: " << curr_path << std::endl;
+    /* Go back 3 dir and move to /hand_keypoint_dataset_26k/hand_keypoint_dataset_26k/ */
+    std::filesystem::path root = curr_path.parent_path().parent_path().parent_path();
+    std::filesystem::path data_dir = root.string() + DATAPATH;
+    /* Print out data_dir */
+    std::cout << "Data directory: " << data_dir << std::endl;
+    /* Define img_dir and train_label_dir */
+    std::string train_img_dir = data_dir.string() + "images/train";
+    std::string train_label_dir = data_dir.string() + "labels/train";
 
     
-    // KeypointDataset dataset(train_img_dir, train_label_dir, false);
-
-    // std::cout << "Dataset length: " << dataset.size().value() << std::endl;
-
-    // HandSample sample = dataset.getItem(0);
-    // std::cout << "First sample image size: " << sample.image.size() << std::endl;
-    
-    // // convert keypoints tensor to vector for display
-    // cv::Mat keypoints = dataset.torchTensortoCVMat(sample.keypoints);
-    // std::cout << "First sample keypoints: " << keypoints << std::endl;
-
-    //displayImage(sample.image, "First Sample Image");
+    HandKeypoint HandKeypoint(train_img_dir, train_label_dir, false); // keep rgb images
+    return HandKeypoint;
 }
+
 void train::TestCustomOperator(){
-    // void* handle = dlopen("./libtorchapp_ops.so", RTLD_NOW | RTLD_GLOBAL);
-    // if (!handle) {
-    //     std::cerr << "Failed to load library: " << dlerror() << std::endl;
-    //     return 1;
-    // }
+    void* handle = dlopen("./customops/libcustomops.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        std::cerr << "Failed to load library: " << dlerror() << std::endl;
+        return;
+    }
 
-    // torch::Tensor test_tensor = torch::randint(0, 10, {100}, torch::kCUDA).to(torch::kInt);
-    // // std::cout << "Test tensor: " << test_tensor << std::endl;
-    // auto op = torch::Dispatcher::singleton()
-    //             .findSchemaOrThrow("my_ops::custom_allreduce", "")
-    //             .typed<torch::Tensor (torch::Tensor)>();
+    torch::Tensor test_tensor = torch::randint(0, 10, {100}, torch::kCUDA).to(torch::kInt);
+    // std::cout << "Test tensor: " << test_tensor << std::endl;
+    auto op = torch::Dispatcher::singleton()
+                .findSchemaOrThrow("my_ops::custom_allreduce", "")
+                .typed<torch::Tensor (torch::Tensor)>();
     
-    // torch::Tensor reduced_sum = op.call(test_tensor);
-    // torch::cuda::synchronize();
-    // std::cout << "Reduced sum: " << reduced_sum << std::endl;
-
+    torch::Tensor reduced_sum = op.call(test_tensor);
+    torch::cuda::synchronize();
+    std::cout << "Reduced sum: " << reduced_sum << std::endl;
 }
 /**
     @brief Sequential data loading for CIFAR#
@@ -54,7 +43,7 @@ CIFAR train::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
     std::string full_path = root + "/" + cifar_bin_path;
     CIFAR dataset(mode);
     
-    // dataset.load_binary_file(full_path);
+    // DataHandling::load_binary_file(full_path);
     // torch::data::Example<> example = dataset.get(0); // 2 tensors: image and label
     // // print out size of dataset and example image and label in tensor form
     // std::cout << "CIFAR Dataset size: " << dataset.size().value() << std::endl;
@@ -65,16 +54,17 @@ CIFAR train::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
 
     //start time 
     clock_t start_time = clock();
+    CIFARdata cifar_data;
     for (const auto &entry: fs::directory_iterator(root + "/data/cifar/cifar-10-batches-bin/")){
         // if mode is train - only read train files
         if (mode == CIFAR::Mode::TRAIN && entry.path().string().find("data_batch") != std::string::npos){
             std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
-            dataset.load_binary_file(entry.path().string());
+            cifar_data = DataHandling::load_binary_file(entry.path().string());
         }
         // if mode is test - only read test file
         else if (mode == CIFAR::Mode::TEST && entry.path().string().find("test_batch") != std::string::npos){
             std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
-            dataset.load_binary_file(entry.path().string());
+            cifar_data = DataHandling::load_binary_file(entry.path().string());
         }
     }
 
@@ -86,12 +76,16 @@ CIFAR train::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
     @note 5 seconds in total to load all 5 CIFAR bin files (~10,000 images each) on CPU
     */
     // check total size of dataset 
-    std::cout << "Total CIFAR Dataset size after loading all bin files: " << dataset.size().value() << std::endl;
+    std::cout << "Total CIFAR Dataset size after loading all bin files: " << cifar_data.images.size() << std::endl;
     
-    return dataset; 
+    // pass data to dataset object
+    dataset.setData(cifar_data.images, cifar_data.labels);
+    return dataset;
 }
 
-/* Testing Dataset loading */
+/**
+    Function to train AlexNet model on CIFAR dataset
+*/
 void train::trainCIFAR(){
     const size_t BatchSize = 128;
     const size_t Epochs = 100;
@@ -128,8 +122,10 @@ void train::trainCIFAR(){
         size_t correct = 0;
         auto start = std::chrono::high_resolution_clock::now();
         for(auto& batch: *dl){
+            
             auto data = batch.data.to(device);
             auto targets = batch.target.to(device);
+
             // Forward pass
             auto output = model->forward(data);
 
@@ -184,4 +180,61 @@ void train::trainCIFAR(){
     
     // save model 
     torch::save(model, "alexnet_cifar10_model.pt");
+}
+
+/**
+    @brief Training function for ResNet model on Hand Keypoint Dataset
+*/
+void train::trainResNet(){
+    HandKeypoint raw_dataset = train::KeypointFunction();
+    const size_t BatchSize = 32;
+    const size_t Epochs = 20;
+    const size_t numworkers = 4; // number of data loading workers
+    const float learning_rate = 0.001;
+    const float momentum = 0.9;
+    torch::Device device(torch::kCUDA);
+    auto model = std::make_shared<resnet_model>();
+    auto stacked_dataset = raw_dataset.map(torch::data::transforms::Stack<>());
+    auto dl = torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
+        std::move(stacked_dataset), 
+        torch::data::DataLoaderOptions().batch_size(BatchSize).workers(numworkers)
+    );
+    // Optimizer
+    torch::optim::SGD optimizer(model->parameters(), torch::optim::SGDOptions
+    (learning_rate).momentum(momentum));
+    model->to(device);
+
+    std::cout << "Starting training ResNet model on Hand Keypoint Dataset..." << std::endl;
+    // Training loop
+    for (size_t epoch = 1; epoch <= Epochs; ++epoch){
+        size_t batch_index = 0;
+        double running_loss = 0.0;
+        auto start = std::chrono::high_resolution_clock::now();
+        for(auto& batch: *dl){
+            auto data = batch.data.to(device);
+            auto targets = batch.target.to(device);
+            // Forward pass
+            auto output = model->forward(data);
+
+            // Compute loss - Regressive task
+            auto loss = torch::nn::functional::mse_loss(output, targets);
+            // update running loss
+            running_loss += loss.item().toFloat() * data.size(0);
+            // Backward pass and optimize
+            optimizer.zero_grad();
+            loss.backward();
+            optimizer.step();
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> epoch_duration = end - start;
+        std::cout << "Epoch " << epoch << " completed in " << epoch_duration.count() << " seconds." << std::endl;
+        
+        auto sample_mean_loss = running_loss / raw_dataset.size().value();
+        std::cout << "Epoch: " << epoch << " | Average Loss: " << sample_mean_loss << std::endl;
+    }
+    //Training finished 
+    std::cout << "Training finished." << std::endl;
+    // save model 
+    torch::save(model, "resnet_handkeypoint_model.pt");
+
 }
