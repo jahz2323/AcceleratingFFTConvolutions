@@ -19,45 +19,53 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 
 namespace cuda_operations {
-    // Spatial Domain operations
-    __global__ void _2DConv(int  in_width, int  in_height,int filter_width, int filter_height, int stride, int padding,
-                           void* input, void* filters, void* output);
-    __global__ void _1DConv(int in_width, int filter_width, int stride, int padding, 
-                           void* input, void* filters, void* output);
+   enum POOL_MODE {
+      MAX_POOL,
+      AVERAGE_POOL
+   };
+   // Spatial Domain operations
+   template <POOL_MODE POOL_MODE>
+   __global__ void _2DPool(int in_width, int in_height, int pool_width, int pool_height, int stride, int padding,  void* input, void* output);
 
-    // Frequency Domain operations 
-    __global__ void _1D_DFT(int in_width, cuComplex* input, cuComplex* output);
-    __global__ void _1D_IDFT(int in_width, cuComplex* input, cuComplex* output);
+   __global__ void _2DConv(int  in_width, int  in_height,int filter_width, int filter_height, int stride, int padding,
+                        void* input, void* filters, void* output);
+   __global__ void _1DConv(int in_width, int filter_width, int stride, int padding, 
+                        void* input, void* filters, void* output);
 
-    __global__ void _1D_FFT(int width, int height, cuComplex* input, cuComplex* output);
-    __global__ void _1D_IFFT(int width, int height, cuComplex* input, cuComplex* output);
+   // Frequency Domain operations 
+   __global__ void _1D_DFT(int in_width, cuComplex* input, cuComplex* output);
+   __global__ void _1D_IDFT(int in_width, cuComplex* input, cuComplex* output);
 
-    // Optimised Shared Memory FFT
-    template <bool inverse, bool isRowWise>
-    __global__ void OptimisedSharedMemory1DFFT(int n, cuComplex* input, cuComplex* output);
+   __global__ void _1D_FFT(int width, int height, cuComplex* input, cuComplex* output);
+   __global__ void _1D_IFFT(int width, int height, cuComplex* input, cuComplex* output);
 
+   // Optimised Shared Memory FFT
+   template <bool inverse, bool isRowWise>
+   __global__ void OptimisedSharedMemory1DFFT(int n, cuComplex* input, cuComplex* output);
+   
+   
 
-    void _2D_FFTConv(int in_width, int in_height, int filter_width, int filter_height,
-                           cuComplex* input, cuComplex* filters, cuComplex* output);
+   void _2D_FFTConv(int in_width, int in_height, int filter_width, int filter_height,
+                        cuComplex* input, cuComplex* filters, cuComplex* output);
 
-    void _2DcuFFTConv(cufftHandle plan, int in_width, int in_height, int filter_width, int filter_height,
-                           cuComplex* input, cuComplex* filters, cuComplex* output);
-    
-    void Optimised2DFFTConv(int in_width, int in_height, cuComplex* input, cuComplex* filters, cuComplex* output);
-                           
-    // GPUSFFT operations
-    void _2D_GPUSFFTConv(); 
-    void _1D_GPUSFFT(int width, int height, cuComplex* input, cuComplex* output);
+   void _2DcuFFTConv(cufftHandle plan, int in_width, int in_height, int filter_width, int filter_height,
+                        cuComplex* input, cuComplex* filters, cuComplex* output);
+   
+   void Optimised2DFFTConv(int in_width, int in_height, cuComplex* input, cuComplex* filters, cuComplex* output);
+                        
+   // GPUSFFT operations
+   void _2D_GPUSFFTConv(); 
+   void _1D_GPUSFFT(int width, int height, cuComplex* input, cuComplex* output);
 
-    // Utility kernels
-    template <bool IsStandard>
-    __global__ void elementWiseMultiplyComplex(int width, int height, cuComplex* input, cuComplex* filters, cuComplex* output);
-    __global__  void bitreversal(int width, int height, cuComplex* data);
-    __global__ void bitreversal(int n, void* storage);
-    __global__ void float2complex(int width, int height, float* input, cuComplex* output);
-    __global__ void complex2float(int width, int height, cuComplex* input, float* output);
-    __global__ void copy(float* odata, float* idata);
-    __global__ void copyComplex(cuComplex* odata, cuComplex* idata);
-    __global__ void scaleOutput(int width, int height, cuComplex* output, float scale);
-    __global__ void naivetranspose(int width, int height, cuComplex* input, cuComplex* output);
+   // Utility kernels
+   template <bool IsStandard>
+   __global__ void elementWiseMultiplyComplex(int width, int height, cuComplex* input, cuComplex* filters, cuComplex* output);
+   __global__  void bitreversal(int width, int height, cuComplex* data);
+   __global__ void bitreversal(int n, void* storage);
+   __global__ void float2complex(int width, int height, float* input, cuComplex* output);
+   __global__ void complex2float(int width, int height, cuComplex* input, float* output);
+   __global__ void copy(float* odata, float* idata);
+   __global__ void copyComplex(cuComplex* odata, cuComplex* idata);
+   __global__ void scaleOutput(int width, int height, cuComplex* output, float scale);
+   __global__ void naivetranspose(int width, int height, cuComplex* input, cuComplex* output);
 }

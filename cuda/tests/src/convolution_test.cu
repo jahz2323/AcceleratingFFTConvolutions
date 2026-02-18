@@ -101,7 +101,6 @@ void convolution_test::runtime(
         std::to_string(custom_conv2d_milliseconds),
         "Spectral_Conv2D",
         std::to_string(in_height) + "x" + std::to_string(in_width),
-        std::to_string(in_height) + "x" + std::to_string(in_width),
         std::to_string(filter_height) + "x" +  std::to_string(filter_width),
         std::to_string(stride),
         std::to_string(padding),
@@ -356,9 +355,9 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
     cudaMalloc((void**)&ctx.d_input_float, ctx.in_w * ctx.in_h * sizeof(float));
     cudaMalloc((void**)&ctx.d_filter_float, ctx.f_w * ctx.f_h * sizeof(float));
     cudaMalloc((void**)&ctx.d_output_float, ctx.out_w * ctx.out_h * sizeof(float));
-    nvtxRangePop();
     cudaMemcpy(ctx.d_input_float, ctx.h_input.data(), ctx.in_w * ctx.in_h * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(ctx.d_filter_float, ctx.h_filter.data(), ctx.f_w * ctx.f_h * sizeof(float), cudaMemcpyHostToDevice);
+    nvtxRangePop();
 
     //B. Torch Setup and Automatic padding 
     //1. Create torch tensors from host data

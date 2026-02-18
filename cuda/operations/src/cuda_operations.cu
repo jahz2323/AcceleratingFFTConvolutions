@@ -11,16 +11,67 @@
 
 // For NVTX profiling
 #include <nvtx3/nvToolsExt.h>
+
 /**
- * @file cuda_operations.cu
- * @brief CUDA implementation of convolution operations 
-    CUDA Conv 
-    Torch Conv
-    FFTConv 
-    FFTConvOva
-    FFTW Conv 
-    cusFFT Conv 
-**/
+    @brief 2D Pooling Kernel 
+*/
+template <cuda_operations::POOL_MODE POOL_MODE> 
+__global__ void cuda_operations::_2DPool(int in_width, int in_height, int pool_width, int pool_height, int stride, int padding,  void* input, void* output){
+    extern __shared__ float shared_pointer[]; 
+    int pad_width = pool_width / 2; 
+    int pad_height = pool_height / 2; 
+    int block_idx = blockIdx.x * blockDim.x; 
+    int block_idy = blockIdx.y * blockDim.y; 
+
+    int global_offset = blockIdx.z * in_width*in_height; 
+    int global_x_index; 
+    int global_y_index; 
+
+    //load global memory to shared memory with padding 
+    for(int i = threadIdx.y; i < blockDim.y + 2 * pad_height; i = i + blockDim.y){
+        for(int j = threadIdx.x; j < blockDim.x + 2 * pad_width; j = j + blockDim.x){
+            global_x_index = block_idx + j - pad_width; 
+            global_y_index = block_idy + i - pad_height; 
+            if(global_x_index >= 0 && global_x_index < in_width && global_y_index >= 0 && global_y_index < in_height){
+                shared_pointer[i * (blockDim.x + 2 * pad_width) + j] =(input)[global_offset + global_y_index * in_width + global_x_index];
+            }
+            else {
+                shared_pointer[i * (blockDim.x + 2 * pad_width) + j] = 0.0f; // zero padding
+            }
+        }
+    }
+
+    __syncthreads();
+    float pool_result;
+    if(POOL_MODE == POOL_MODE::MAX_POOL){
+        pool_result = -FLT_MAX; // initialize to smallest float
+    }
+    else if(POOL_MODE == POOL_MODE::AVERAGE_POOL){
+        pool_result = 0.0f; // initialize to 0 for average pooling
+    }
+
+    // iterate over the pooling window in shared memory and compute the max or average
+    for(int i = 0; i < pool_height; i++){
+        for(int j = 0; j < pool_width; j++){
+            float value = shared_pointer[(threadIdx.y + i) * (blockDim.x + 2 * pad_width) + threadIdx.x + j];
+            if(POOL_MODE == POOL_MODE::MAX_POOL){
+                pool_result = fmaxf(pool_result, value);
+            }
+            else if(POOL_MODE == POOL_MODE::AVERAGE_POOL){
+                pool_result += value;
+            }
+        }
+    }
+
+    // for average pooling, divide the sum by the number of elements in the pooling window
+    if(POOL_MODE == POOL_MODE::AVERAGE_POOL){
+        pool_result /= (pool_width * pool_height);
+    }
+
+    // write the result back to global memory 
+    (output)[global_offset + block_idy * (in_width / stride) + block_idx] = (pool_result);
+}
+
 
 /**
     * @brief 2D Convolution CUDA kernel
