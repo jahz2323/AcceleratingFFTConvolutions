@@ -68,4 +68,5 @@ namespace cuda_operations {
    __global__ void copyComplex(cuComplex* odata, cuComplex* idata);
    __global__ void scaleOutput(int width, int height, cuComplex* output, float scale);
    __global__ void naivetranspose(int width, int height, cuComplex* input, cuComplex* output);
+   __global__ void inplaceTranspose(int width, int height, cuComplex* data);
 }

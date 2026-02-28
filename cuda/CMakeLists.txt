@@ -44,3 +44,18 @@ target_link_libraries(Cuda_app PRIVATE -Wl,--start-group
     ${OpenCV_LIBS}
     CURL::libcurl 
 )
+
+#5. Create directories for results, if found clear contents of results directory
+set(results_dir "${CMAKE_BINARY_DIR}/results")
+set(images_dir "${results_dir}/images")
+set(mse_dir "${results_dir}/mse")
+file(MAKE_DIRECTORY ${images_dir})
+file(MAKE_DIRECTORY ${mse_dir})
+file(GLOB images_files "${images_dir}/*")
+file(GLOB mse_files "${mse_dir}/*")
+foreach(file ${images_files})
+    file(REMOVE ${file})
+endforeach()
+foreach(file ${mse_files})
+    file(REMOVE ${file})
+endforeach()    

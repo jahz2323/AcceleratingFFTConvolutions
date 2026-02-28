@@ -393,7 +393,6 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     //Implementation of 2D FFT Convolution kernel
     //dim3 block(w + fw -1 , h + fh -1);
 
-    nvtxRangePushA("2D_FFTConv");
     //max thread dispatch per block 1024
     int maxThreadsPerBlock = 32; // 32x32 = 1024
     // dim3 block(fw, fh);
@@ -404,9 +403,10 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
 
     dim3 fft_block(1, maxThreadsPerBlock); // 1 thread per row
     dim3 fft_grid(1, (h + fft_block.y -1) / fft_block.y);
-    cuComplex* d_temp;
-    cudaMalloc(&d_temp, w * h * sizeof(cuComplex));
-
+    // cuComplex* d_temp;
+    // cudaMalloc(&d_temp, w * h * sizeof(cuComplex));
+    
+    nvtxRangePushA("2D_FFTConv");
     // Steps:
     // 1. Compute 2D FFT of input
     nvtxRangePushA("InputFFT");
@@ -414,13 +414,13 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     _1D_FFT<<<fft_grid, fft_block>>>(w, h, input, input);
     
     //get the transpose of the input for column-wise FFT
-    cuda_operations::naivetranspose<<<grid, block>>>(w, h, input, d_temp);
-    cudaMemcpy(input, d_temp, w * h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cuda_operations::naivetranspose<<<grid, block>>>(w, h, input, output);
+    cudaMemcpy(input, output, w * h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // perform row-wise FFT again to complete 2D FFT
     cuda_operations::bitreversal<<<grid, block>>>(h, w, input);
     _1D_FFT<<<fft_grid, fft_block>>>(h, w, input, input);
-    nvtxRangePop(); // FFT_2D_FFTConv
+    nvtxRangePop(); // InputFFT
 
     // 2. Compute 2D FFT of filter
     nvtxRangePushA("FilterFFT");
@@ -428,8 +428,8 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     _1D_FFT<<<fft_grid, fft_block>>>(fw, fh, filters, filters);
     
     //get the transpose of the filter for column-wise FFT
-    cuda_operations::naivetranspose<<<grid, block>>>(fw, fh, filters, d_temp);
-    cudaMemcpy(filters, d_temp, fw * fh * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cuda_operations::naivetranspose<<<grid, block>>>(fw, fh, filters, output);
+    cudaMemcpy(filters, output, fw * fh * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // perform row-wise FFT again to complete 2D FFT
     cuda_operations::bitreversal<<<grid, block>>>(fh, fw, filters);
@@ -450,16 +450,16 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     _1D_IFFT<<<fft_grid, fft_block>>>(output_width, output_height, output, output);
     
     // get the transpose of the output for column-wise IFFT
-    cuda_operations::naivetranspose<<<grid, block>>>(output_width, output_height, output, d_temp);
-    cudaMemcpy(output, d_temp, output_width * output_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    cuda_operations::naivetranspose<<<grid, block>>>(output_width, output_height, output, filters);
+    cudaMemcpy(output, filters, output_width * output_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
     // perform row-wise IFFT again to complete 2D IFFT
     cuda_operations::bitreversal<<<grid, block>>>(output_height, output_width, output);
     _1D_IFFT<<<fft_grid, fft_block>>>(output_height, output_width, output, output);
     nvtxRangePop(); // IFFT_2D_FFTConv
 
-    cudaFree(d_temp);
-    nvtxRangePop();
+    nvtxRangePop(); // 2D_FFTConv
+    // cudaFree(d_temp);
 }
 
 #define MAX_SHARED_MEM 49152 // 48KB
@@ -723,6 +723,10 @@ __global__ void cuda_operations::naivetranspose(int width, int height, cuComplex
     int out_index = idx * height + idy;
     output[out_index] = input[in_index];
 }
+__global__ void cuda_operations::inplaceTranspose(int width, int height, cuComplex* data){
+
+}
+
 
 __global__ void cuda_operations::scaleOutput(int width, int height, cuComplex* output, float scale){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
