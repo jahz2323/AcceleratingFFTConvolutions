@@ -35,15 +35,40 @@ namespace cuda_operations {
    // Frequency Domain operations 
    __global__ void _1D_DFT(int in_width, cuComplex* input, cuComplex* output);
    __global__ void _1D_IDFT(int in_width, cuComplex* input, cuComplex* output);
-
    __global__ void _1D_FFT(int width, int height, cuComplex* input, cuComplex* output);
    __global__ void _1D_IFFT(int width, int height, cuComplex* input, cuComplex* output);
+   void Forward2DFFT(int in_width, int in_height, cuComplex* input, cuComplex* output);
+   void Inverse2DFFT( int in_width, int in_height, cuComplex* input, cuComplex* output);
 
    // Optimised Shared Memory FFT
    template <bool inverse, bool isRowWise>
    __global__ void OptimisedSharedMemory1DFFT(int n, cuComplex* input, cuComplex* output);
    
+   __global__ void overlap_add_kernel(
+      const cuComplex* workspace_block, 
+      cuComplex* d_output_complex, 
+      int block_w, int block_h, 
+      int start_x, int start_y, 
+      int out_w, int out_h
+   );
+   __global__ void tiling_and_extract_kernel(
+      const cuComplex* d_input_complex, cuComplex* workspace_block, 
+      int in_w, int in_h, 
+      int start_x, int start_y, 
+      int block_w, int block_h
+   );
    
+   void FFT_OVA_Conv(
+      int in_width, int in_height,
+      int filter_width, int filter_height,
+      int stride, int padding,
+      cuComplex* input, cuComplex* filters,
+      cuComplex* output, cuComplex* workspace_block,
+      int segment_w, int segment_h,
+      int block_w, int block_h,
+      int num_blocks_w, int num_blocks_h,
+      int total_blocks
+   );
 
    void _2D_FFTConv(int in_width, int in_height, int filter_width, int filter_height,
                         cuComplex* input, cuComplex* filters, cuComplex* output);

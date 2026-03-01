@@ -367,6 +367,207 @@ __global__ void cuda_operations::_1D_IFFT(int width, int height, cuComplex* inpu
     }
 }
 
+__global__ void cuda_operations::overlap_add_kernel(
+    const cuComplex* convolved_block,
+    cuComplex* output,
+    int block_w, int block_h,
+    int start_x, int start_y,
+    int out_w, int out_h
+){
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (idx >= block_w || idy >= block_h) return;
+
+    int local_idx = idy * block_w + idx;
+    int output_x = start_x + idx;
+    int output_y = start_y + idy;
+
+    if(output_x < out_w && output_y < out_h){
+        int output_idx = output_y * out_w + output_x;
+        //float scale =  (block_w * block_h); // scale factor to prevent overflow, can be tuned based on expected value range of convolved_block
+        float scale = 1.0f; // no scaling for now, can be adjusted based on empirical testing
+        cuComplex val = convolved_block[local_idx];
+        // atomic add to handle overlapping regions
+        atomicAdd(&output[output_idx].x, val.x * scale);
+        atomicAdd(&output[output_idx].y, val.y * scale);
+    }
+}
+
+__global__ void cuda_operations::tiling_and_extract_kernel(
+    const cuComplex* input, 
+    cuComplex* workspace_block, 
+    int in_width, int in_height,
+    int start_x, int start_y,
+    int block_w, int block_h
+){
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (idx >= block_w || idy >= block_h) return;
+
+    int local_idx = idy * block_w + idx;
+    int img_x = start_x + idx; // where we are relative to the image for current block
+    int img_y = start_y + idy; 
+
+    if(img_x < in_width && img_y < in_height){
+        workspace_block[local_idx] = input[img_y * in_width + img_x];
+    } else {
+        workspace_block[local_idx] = make_cuComplex(0.0f, 0.0f); // zero pad
+    }
+}
+
+
+void cuda_operations::FFT_OVA_Conv(
+    int in_width, int in_height, 
+    int filter_width, int filter_height, 
+    int stride, int padding,
+    cuComplex* d_input_complex, cuComplex* d_filter_complex, cuComplex* d_output_complex, cuComplex* workspace_block,
+    int segment_w, int segment_h,
+    int block_w, int block_h,
+    int num_blocks_w, int num_blocks_h,
+    int total_blocks
+){
+    /**
+            Optimised Overlap-Add Convolution using FFT
+            Data d with dim (N,N) filter f with dim (K,K)
+            1. Segment data D into non-overlapping blocks of kxk 
+            2. Zero pad to k+k-1 
+            3. Compute FFT of filter
+            4. for each block do : 
+            - zero pad to k+k-1
+            - compute FFT of block
+            - element-wise multiply in frequency domain
+            - compute inverse FFT to get convolved block
+            5. Overlap-add the convolved blocks to get final output
+        */
+    // Input is contigous original image, 
+    // filter is original filter
+    // workspace_block zero padded to power of two (target - k + 1) 
+    // perform a sliding window batch over image , cache filter and perform 2dfft on each block, then overlap add to output
+    int in_w = in_width;
+    int in_h = in_height;
+    int f_w = filter_width;
+    int f_h = filter_height;
+    int out_w = ((in_w - f_w + 2 * padding)/stride + 1);
+    int out_h = ((in_h - f_h + 2 * padding)/stride + 1);
+
+    //check if input if first row is loadded correctly
+    cuComplex first_row[block_w];
+    cudaMemcpy(first_row, d_input_complex, block_w * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    std::cout << "First row of input complex data sample: " << std::endl;
+    for(int i = 0; i < block_w; i++){
+        std::cout << first_row[i].x << "i" << first_row[i].y << "j " << std::endl;
+    }
+    std::cout << std::endl;
+
+    //check filter is loaded correctly
+    cuComplex filter_sample[block_w * block_h];
+    cudaMemcpy(filter_sample, d_filter_complex, block_w * block_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    std::cout << "Filter complex data sample FIRST 25 Elements: " << std::endl;
+    for(int i = 0; i < 5  * 5  ; i++){
+        std::cout << filter_sample[i].x << "i" << filter_sample[i].y << "j " << std::endl;
+    }
+    std::cout << std::endl;
+
+    dim3 block_size(16,16); 
+    dim3 block_grid((block_w + block_size.x - 1) / block_size.x, 
+                (block_h + block_size.y - 1) / block_size.y);
+    
+    std::cout << "Total blocks to process: " << total_blocks << std::endl;
+    std::cout << "Params entry: in_w: " << in_w << " in_h: " << in_h << " f_w: " << f_w << " f_h: " << f_h << std::endl;
+    std::cout << "block_w: " << block_w << " block_h: " << block_h << " segment_w: " << segment_w << " segment_h: " << segment_h << std::endl;
+    std::cout << "num_blocks_w: " << num_blocks_w << " num_blocks_h: " << num_blocks_h << std::endl;
+    nvtxRangePushA("FFT_OVA_Conv");
+
+    // Compute FFT of filter once and reuse for all blocks
+    cuda_operations::Forward2DFFT(block_w, block_h, d_filter_complex, d_output_complex); // in-place FFT of filter
+    cudaDeviceSynchronize();
+    cuComplex filter_check;
+    cudaMemcpy(&filter_check, d_filter_complex, sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    std::cout << "DEBUG: Filter FFT index 0: " << filter_check.x << " + " << filter_check.y << "i" << std::endl;
+    for (int block_idx = 0; block_idx < total_blocks; block_idx++){
+     
+        int block_x = block_idx % num_blocks_w;
+        int block_y = block_idx / num_blocks_w;
+
+        int start_x = block_x * segment_w;
+        int start_y = block_y * segment_h;
+
+        // extract block to workspace with zero padding
+        cuda_operations::tiling_and_extract_kernel<<<block_grid, block_size>>>(
+            d_input_complex, workspace_block, 
+            in_w, in_w, 
+            start_x, 
+            start_y, 
+            block_w, block_h
+        ); 
+       
+        // compute FFT of block in-place in workspace
+        cuda_operations::Forward2DFFT(block_w, block_h, workspace_block, d_output_complex);
+        // element-wise multiply in frequency domain with filter
+        int num_elements = block_w * block_h;
+        int threads_per_block = 256;
+        int num_blocks = (num_elements + threads_per_block - 1) / threads_per_block;
+        cuda_operations::elementWiseMultiplyComplex<false><<<num_blocks, threads_per_block>>>(
+            block_w,block_h , workspace_block, d_filter_complex, workspace_block
+        );  
+         // compute inverse FFT to get convolved block in workspace
+        cuda_operations::Inverse2DFFT(block_w, block_h, workspace_block, d_output_complex);
+        
+        // store the y block to global memory
+        cuda_operations::overlap_add_kernel<<<block_grid, block_size>>>(
+            workspace_block, d_output_complex,
+            block_w, block_h, 
+            start_x, 
+            start_y,
+            out_w, out_h
+        );
+    }
+    nvtxRangePop(); // FFT_OVA_Conv
+}
+
+void cuda_operations::Forward2DFFT( int in_width, int in_height, cuComplex* input, cuComplex* output){
+    dim3 bitrev_block(32, 32);
+    dim3 bitrev_grid((in_width + bitrev_block.x -1 ) / bitrev_block.x, (in_height + bitrev_block.y - 1) / bitrev_block.y);
+
+
+    dim3 fft_block(1, 32); // 1 thread per row
+    dim3 fft_grid(1, (in_height + fft_block.y -1) / fft_block.y);
+
+    cuda_operations::bitreversal<<<bitrev_grid, bitrev_block>>>(in_width, in_height, input);
+    // Perform row-wise FFT
+    cuda_operations::_1D_FFT<<<fft_grid, fft_block>>>(in_width, in_height, input, input);
+
+    // Transpose the result for column-wise FFT
+    cuda_operations::naivetranspose<<<bitrev_grid, bitrev_block>>>(in_width, in_height, input, output);
+    cudaMemcpy(input, output, in_width * in_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+
+    cuda_operations::bitreversal<<<bitrev_grid, bitrev_block>>>(in_width, in_height, input);
+    // Perform column-wise FFT
+    cuda_operations::_1D_FFT<<<fft_grid, fft_block>>>(in_height, in_width, input, input);
+}
+
+void cuda_operations::Inverse2DFFT(int in_width, int in_height, cuComplex* input, cuComplex* output){
+    dim3 bitrev_block(32, 32);
+    dim3 bitrev_grid((in_width + bitrev_block.x -1 ) / bitrev_block.x, (in_height + bitrev_block.y - 1) / bitrev_block.y);
+
+
+    dim3 fft_block(1, 32); // 1 thread per row
+    dim3 fft_grid(1, (in_height + fft_block.y -1) / fft_block.y);
+    
+    cuda_operations::bitreversal<<<bitrev_grid, bitrev_block>>>(in_width, in_height, input);
+    // Perform row-wise IFFT
+    cuda_operations::_1D_IFFT<<<fft_grid, fft_block>>>(in_width, in_height, input, input);
+
+    // Transpose the result for column-wise IFFT
+    cuda_operations::naivetranspose<<<bitrev_grid, bitrev_block>>>(in_width, in_height, input, output);
+    cudaMemcpy(input, output, in_width * in_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+
+    cuda_operations::bitreversal<<<bitrev_grid, bitrev_block>>>(in_width, in_height, input);
+    // Perform column-wise IFFT
+    cuda_operations::_1D_IFFT<<<fft_grid, fft_block>>>(in_height, in_width, input, input);
+}
 
 /**
     * @brief 2D FFTConv CUDA kernel
@@ -401,8 +602,8 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     dim3 grid((w + block.x -1 ) / block.x, (h + block.y - 1) / block.y);
 
 
-    dim3 fft_block(1, maxThreadsPerBlock); // 1 thread per row
-    dim3 fft_grid(1, (h + fft_block.y -1) / fft_block.y);
+    // dim3 fft_block(1, maxThreadsPerBlock); // 1 thread per row
+    // dim3 fft_grid(1, (h + fft_block.y -1) / fft_block.y);
     // cuComplex* d_temp;
     // cudaMalloc(&d_temp, w * h * sizeof(cuComplex));
     
@@ -410,30 +611,32 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
     // Steps:
     // 1. Compute 2D FFT of input
     nvtxRangePushA("InputFFT");
-    cuda_operations::bitreversal<<<grid, block>>>(w, h, input);
-    _1D_FFT<<<fft_grid, fft_block>>>(w, h, input, input);
+    // cuda_operations::bitreversal<<<grid, block>>>(w, h, input);
+    // _1D_FFT<<<fft_grid, fft_block>>>(w, h, input, input);
     
-    //get the transpose of the input for column-wise FFT
-    cuda_operations::naivetranspose<<<grid, block>>>(w, h, input, output);
-    cudaMemcpy(input, output, w * h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    // //get the transpose of the input for column-wise FFT
+    // cuda_operations::naivetranspose<<<grid, block>>>(w, h, input, output);
+    // cudaMemcpy(input, output, w * h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
-    // perform row-wise FFT again to complete 2D FFT
-    cuda_operations::bitreversal<<<grid, block>>>(h, w, input);
-    _1D_FFT<<<fft_grid, fft_block>>>(h, w, input, input);
+    // // perform row-wise FFT again to complete 2D FFT
+    // cuda_operations::bitreversal<<<grid, block>>>(h, w, input);
+    // _1D_FFT<<<fft_grid, fft_block>>>(h, w, input, input);
+    // nvtxRangePop(); // InputFFT
+    cuda_operations::Forward2DFFT(w, h, input, output);
     nvtxRangePop(); // InputFFT
-
     // 2. Compute 2D FFT of filter
     nvtxRangePushA("FilterFFT");
-    cuda_operations::bitreversal<<<grid, block>>>(fw, fh, filters);
-    _1D_FFT<<<fft_grid, fft_block>>>(fw, fh, filters, filters);
+    // cuda_operations::bitreversal<<<grid, block>>>(fw, fh, filters);
+    // _1D_FFT<<<fft_grid, fft_block>>>(fw, fh, filters, filters);
     
-    //get the transpose of the filter for column-wise FFT
-    cuda_operations::naivetranspose<<<grid, block>>>(fw, fh, filters, output);
-    cudaMemcpy(filters, output, fw * fh * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    // //get the transpose of the filter for column-wise FFT
+    // cuda_operations::naivetranspose<<<grid, block>>>(fw, fh, filters, output);
+    // cudaMemcpy(filters, output, fw * fh * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
-    // perform row-wise FFT again to complete 2D FFT
-    cuda_operations::bitreversal<<<grid, block>>>(fh, fw, filters);
-    _1D_FFT<<<fft_grid, fft_block>>>(fh, fw, filters, filters);
+    // // perform row-wise FFT again to complete 2D FFT
+    // cuda_operations::bitreversal<<<grid, block>>>(fh, fw, filters);
+    // _1D_FFT<<<fft_grid, fft_block>>>(fh, fw, filters, filters);
+    cuda_operations::Forward2DFFT(w, h, filters, output);
     nvtxRangePop(); // FilterFFT
     
     // 3. Element-wise multiply the two FFT results 
@@ -446,16 +649,17 @@ void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
 
     nvtxRangePushA("IFFT_2D_FFTConv");
     // 4. Compute inverse 2D FFT of the product to get convolved output
-    cuda_operations::bitreversal<<<grid, block>>>(output_width, output_height, output);
-    _1D_IFFT<<<fft_grid, fft_block>>>(output_width, output_height, output, output);
+    // cuda_operations::bitreversal<<<grid, block>>>(output_width, output_height, output);
+    // _1D_IFFT<<<fft_grid, fft_block>>>(output_width, output_height, output, output);
     
-    // get the transpose of the output for column-wise IFFT
-    cuda_operations::naivetranspose<<<grid, block>>>(output_width, output_height, output, filters);
-    cudaMemcpy(output, filters, output_width * output_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
+    // // get the transpose of the output for column-wise IFFT : REUSE INPUT BUFFER to store output result
+    // cuda_operations::naivetranspose<<<grid, block>>>(output_width, output_height, output, input);
+    // cudaMemcpy(output, input, output_width * output_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
 
-    // perform row-wise IFFT again to complete 2D IFFT
-    cuda_operations::bitreversal<<<grid, block>>>(output_height, output_width, output);
-    _1D_IFFT<<<fft_grid, fft_block>>>(output_height, output_width, output, output);
+    // // perform row-wise IFFT again to complete 2D IFFT
+    // cuda_operations::bitreversal<<<grid, block>>>(output_height, output_width, output);
+    // _1D_IFFT<<<fft_grid, fft_block>>>(output_height, output_width, output, output);
+    cuda_operations::Inverse2DFFT(w, h, output, input);
     nvtxRangePop(); // IFFT_2D_FFTConv
 
     nvtxRangePop(); // 2D_FFTConv
@@ -723,9 +927,7 @@ __global__ void cuda_operations::naivetranspose(int width, int height, cuComplex
     int out_index = idx * height + idy;
     output[out_index] = input[in_index];
 }
-__global__ void cuda_operations::inplaceTranspose(int width, int height, cuComplex* data){
 
-}
 
 
 __global__ void cuda_operations::scaleOutput(int width, int height, cuComplex* output, float scale){

@@ -29,13 +29,28 @@ inline TestMode parseMode(char* arg) {
 
 class convolution_test {
 public:
+    struct OVABlock{
+        float* data;
+    };
     struct ConvContext {
+        bool use_ova;
+        int target_ova_size = 32; 
+
         int in_h, in_w, f_h, f_w, stride, pad; 
         int out_h, out_w;
         int fft_h, fft_w;
 
+        // OVA params
+        int block_size; 
+        int block_h, block_w;
+        int segment_h, segment_w;
+        int num_blocks_h, num_blocks_w;
+        int total_blocks;
+        cuComplex* workspace_block; 
+
         //Host Data 
         std::vector<float> h_input, h_filter, h_output; 
+        std::vector<float> h_padded_input, h_padded_filter;
 
         //Device Data 
         //Direct Conv
@@ -43,12 +58,14 @@ public:
         
         //FFT Conv
         cuComplex *d_input_complex, *d_filter_complex, *d_output_complex;
+        float *d_padded_filter_OVA; // store padded filter to segment for ova;
         float *d_fft_output_float; // for storing real part of FFT output after conversion, used for MSE and saving results, allocated with fft dims for simplicity of indexing
         //Torch Data
         torch::Tensor t_input, t_filter, t_output;
 
         //Scratch space for save_state 
         cuComplex* d_saved_input_complex, *d_saved_filter_complex;
+        float* d_saved_input_float, *d_saved_filter_float;
 
         //Results Map 
         struct Results{
@@ -64,7 +81,16 @@ public:
         int size;
     };
 
-    static void initaliseContext(ConvContext& ctx, int in_h, int in_w, int f_h, int f_w, int stride, int pad, bool image_test, cv::Mat test_image, cv::Mat test_filter); // handles image vs random data loading
+    static void initaliseContext(
+        ConvContext& ctx, 
+        int in_h, int in_w, 
+        int f_h, int f_w, 
+        int stride, int pad, 
+        bool image_test, 
+        cv::Mat test_image, cv::Mat test_filter, 
+        int target_block_size,
+        bool use_ova = false
+    ); // handles image vs random data loading
     static void setupGPUMemory(ConvContext& ctx); // allocates and copies data to device
     static void setupFFTContext(ConvContext& ctx); // allocates complex ptrs
     static void setupDirectContext(ConvContext& ctx); // allocates float ptrs
