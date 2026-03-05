@@ -20,12 +20,18 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 namespace cuda_operations {
    enum POOL_MODE {
-      MAX_POOL,
-      AVERAGE_POOL
+      MAX_POOL = 0,
+      AVERAGE_POOL = 1
    };
    // Spatial Domain operations
-   template <POOL_MODE POOL_MODE>
-   __global__ void _2DPool(int in_width, int in_height, int pool_width, int pool_height, int stride, int padding,  void* input, void* output);
+
+   __global__ void _2DPool(
+      int in_width, int in_height, 
+      int pool_width, int pool_height,
+      int stride, int padding, 
+      void* input, void * output,
+      cuda_operations::POOL_MODE pool_mode
+   );
 
    __global__ void _2DConv(int  in_width, int  in_height,int filter_width, int filter_height, int stride, int padding,
                         void* input, void* filters, void* output);
@@ -58,6 +64,13 @@ namespace cuda_operations {
       int block_w, int block_h
    );
    
+   void _2DSpectralPool(
+      int in_width, int in_height, 
+      int pool_width, int pool_height,
+      int stride, int padding, 
+      cuComplex* input, cuComplex* output,
+   )
+
    void FFT_OVA_Conv(
       int in_width, int in_height,
       int filter_width, int filter_height,

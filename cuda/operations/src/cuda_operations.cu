@@ -15,62 +15,55 @@
 /**
     @brief 2D Pooling Kernel 
 */
-template <cuda_operations::POOL_MODE POOL_MODE> 
-__global__ void cuda_operations::_2DPool(int in_width, int in_height, int pool_width, int pool_height, int stride, int padding,  void* input, void* output){
-    extern __shared__ float shared_pointer[]; 
-    int pad_width = pool_width / 2; 
-    int pad_height = pool_height / 2; 
-    int block_idx = blockIdx.x * blockDim.x; 
-    int block_idy = blockIdx.y * blockDim.y; 
 
-    int global_offset = blockIdx.z * in_width*in_height; 
-    int global_x_index; 
-    int global_y_index; 
+__global__ void cuda_operations::_2DPool(
+    int in_width, int in_height, 
+    int pool_width, int pool_height, 
+    int stride, int padding,  
+    void* input, void* output,
+    cuda_operations::POOL_MODE pool_mode
+){
+    // 2DPOOL with Average or Max pooling 
+    // Using global memory for 
+    //extern __shared__ float shared_pointer[]; 
+    auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+    auto idy = blockIdx.y * blockDim.y + threadIdx.y;
 
-    //load global memory to shared memory with padding 
-    for(int i = threadIdx.y; i < blockDim.y + 2 * pad_height; i = i + blockDim.y){
-        for(int j = threadIdx.x; j < blockDim.x + 2 * pad_width; j = j + blockDim.x){
-            global_x_index = block_idx + j - pad_width; 
-            global_y_index = block_idy + i - pad_height; 
-            if(global_x_index >= 0 && global_x_index < in_width && global_y_index >= 0 && global_y_index < in_height){
-                shared_pointer[i * (blockDim.x + 2 * pad_width) + j] =(input)[global_offset + global_y_index * in_width + global_x_index];
-            }
-            else {
-                shared_pointer[i * (blockDim.x + 2 * pad_width) + j] = 0.0f; // zero padding
-            }
-        }
-    }
+    int output_width = ((in_width - pool_width + 2 * padding) / stride) + 1;
+    int output_height = ((in_height - pool_height + 2 * padding) / stride) + 1;
 
-    __syncthreads();
-    float pool_result;
-    if(POOL_MODE == POOL_MODE::MAX_POOL){
-        pool_result = -FLT_MAX; // initialize to smallest float
-    }
-    else if(POOL_MODE == POOL_MODE::AVERAGE_POOL){
-        pool_result = 0.0f; // initialize to 0 for average pooling
-    }
-
-    // iterate over the pooling window in shared memory and compute the max or average
-    for(int i = 0; i < pool_height; i++){
-        for(int j = 0; j < pool_width; j++){
-            float value = shared_pointer[(threadIdx.y + i) * (blockDim.x + 2 * pad_width) + threadIdx.x + j];
-            if(POOL_MODE == POOL_MODE::MAX_POOL){
-                pool_result = fmaxf(pool_result, value);
-            }
-            else if(POOL_MODE == POOL_MODE::AVERAGE_POOL){
-                pool_result += value;
+    if (idx >= output_width || idy >= output_height) return;
+    if( pool_mode == POOL_MODE::MAX_POOL){
+        float max_value = -FLT_MAX; // initialize to smallest float
+        for(int i = 0; i < pool_width; i++){
+                for (int j = 0; j < pool_height; j++){
+                int in_x = idx * stride + i - padding;
+                int in_y = idy * stride + j - padding;
+                if(in_x >= 0 && in_x < in_width && in_y >= 0 && in_y < in_height){
+                    float val = static_cast<float*>(input)[in_y * in_width + in_x];
+                    if(val > max_value) max_value = val;
+                }
             }
         }
+        static_cast<float*>(output)[idy * output_width + idx] = max_value;
     }
-
-    // for average pooling, divide the sum by the number of elements in the pooling window
-    if(POOL_MODE == POOL_MODE::AVERAGE_POOL){
-        pool_result /= (pool_width * pool_height);
+    if(pool_mode == POOL_MODE::AVERAGE_POOL){
+        float sum = 0.0f;
+        int count = 0;
+        for(int i = 0; i < pool_width; i++){
+            for (int j = 0; j < pool_height; j++){
+                int in_x = idx * stride + i - padding;
+                int in_y = idy * stride + j - padding;
+                if(in_x >= 0 && in_x < in_width && in_y >= 0 && in_y < in_height){
+                    sum += static_cast<float*>(input)[in_y * in_width + in_x];
+                    count++;
+                }
+            }
+        }
+        static_cast<float*>(output)[idy * output_width + idx] = count > 0 ? sum / count : 0.0f;
     }
-
-    // write the result back to global memory 
-    (output)[global_offset + block_idy * (in_width / stride) + block_idx] = (pool_result);
 }
+
 
 
 /**
@@ -592,73 +585,31 @@ void cuda_operations::Inverse2DFFT(int in_width, int in_height, cuComplex* input
 void cuda_operations::_2D_FFTConv(int w, int h, int fw, int fh,
                            cuComplex* input, cuComplex* filters, cuComplex* output) {
     //Implementation of 2D FFT Convolution kernel
-    //dim3 block(w + fw -1 , h + fh -1);
 
     //max thread dispatch per block 1024
     int maxThreadsPerBlock = 32; // 32x32 = 1024
-    // dim3 block(fw, fh);
-    // dim3 grid((w + block.x -1 ) / block.x, (h + block.y - 1) / block.y);
+
     dim3 block(maxThreadsPerBlock, maxThreadsPerBlock);
     dim3 grid((w + block.x -1 ) / block.x, (h + block.y - 1) / block.y);
 
-
-    // dim3 fft_block(1, maxThreadsPerBlock); // 1 thread per row
-    // dim3 fft_grid(1, (h + fft_block.y -1) / fft_block.y);
-    // cuComplex* d_temp;
-    // cudaMalloc(&d_temp, w * h * sizeof(cuComplex));
-    
     nvtxRangePushA("2D_FFTConv");
     // Steps:
     // 1. Compute 2D FFT of input
     nvtxRangePushA("InputFFT");
-    // cuda_operations::bitreversal<<<grid, block>>>(w, h, input);
-    // _1D_FFT<<<fft_grid, fft_block>>>(w, h, input, input);
-    
-    // //get the transpose of the input for column-wise FFT
-    // cuda_operations::naivetranspose<<<grid, block>>>(w, h, input, output);
-    // cudaMemcpy(input, output, w * h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-
-    // // perform row-wise FFT again to complete 2D FFT
-    // cuda_operations::bitreversal<<<grid, block>>>(h, w, input);
-    // _1D_FFT<<<fft_grid, fft_block>>>(h, w, input, input);
-    // nvtxRangePop(); // InputFFT
     cuda_operations::Forward2DFFT(w, h, input, output);
     nvtxRangePop(); // InputFFT
     // 2. Compute 2D FFT of filter
     nvtxRangePushA("FilterFFT");
-    // cuda_operations::bitreversal<<<grid, block>>>(fw, fh, filters);
-    // _1D_FFT<<<fft_grid, fft_block>>>(fw, fh, filters, filters);
-    
-    // //get the transpose of the filter for column-wise FFT
-    // cuda_operations::naivetranspose<<<grid, block>>>(fw, fh, filters, output);
-    // cudaMemcpy(filters, output, fw * fh * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-
-    // // perform row-wise FFT again to complete 2D FFT
-    // cuda_operations::bitreversal<<<grid, block>>>(fh, fw, filters);
-    // _1D_FFT<<<fft_grid, fft_block>>>(fh, fw, filters, filters);
     cuda_operations::Forward2DFFT(w, h, filters, output);
     nvtxRangePop(); // FilterFFT
-    
     // 3. Element-wise multiply the two FFT results 
     int output_width = w; // for same conv - Basic FFTConv 
     int output_height = h;
-
     nvtxRangePushA("ElementWiseMultiply_FFTConv");
     elementWiseMultiplyComplex<false><<<grid,block>>>(output_width, output_height, input, filters, output);
     nvtxRangePop(); // ElementWiseMultiply_FFTConv
-
     nvtxRangePushA("IFFT_2D_FFTConv");
     // 4. Compute inverse 2D FFT of the product to get convolved output
-    // cuda_operations::bitreversal<<<grid, block>>>(output_width, output_height, output);
-    // _1D_IFFT<<<fft_grid, fft_block>>>(output_width, output_height, output, output);
-    
-    // // get the transpose of the output for column-wise IFFT : REUSE INPUT BUFFER to store output result
-    // cuda_operations::naivetranspose<<<grid, block>>>(output_width, output_height, output, input);
-    // cudaMemcpy(output, input, output_width * output_height * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-
-    // // perform row-wise IFFT again to complete 2D IFFT
-    // cuda_operations::bitreversal<<<grid, block>>>(output_height, output_width, output);
-    // _1D_IFFT<<<fft_grid, fft_block>>>(output_height, output_width, output, output);
     cuda_operations::Inverse2DFFT(w, h, output, input);
     nvtxRangePop(); // IFFT_2D_FFTConv
 
@@ -671,15 +622,12 @@ void cuda_operations::Optimised2DFFTConv(int w, int h, cuComplex *input, cuCompl
     // Implementation of Optimised 2D FFT Convolution using Shared Memory FFT
     // Each block processes {n} rows
     // each thread processes 1 element in the row
-
     // convert w and h ints to long int 
     long int long_w = static_cast<long int>(w);
     long int long_h = static_cast<long int>(h);
-     
     //PLAN:
     //FIRST PASS: ROW-WISE FFT
     //SECOND PASS: COLUMN-WISE FFT
-    
     int rowsPerBlock = 16; // each block processes 16 rows
     dim3 block(w, rowsPerBlock);
     dim3 grid1(1, (w + rowsPerBlock -1) / rowsPerBlock);

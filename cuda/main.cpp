@@ -32,6 +32,11 @@ int main(int argc, char* argv[]){
         }
         convolution_test::convolve(argv);
     }
+    if (mode == "test_pool") {
+        // Call pooling test function
+        std::cout << "Running pooling tests..." << std::endl;
+        convolution_test::pooling(argv);
+    }
     else if (mode == "test_custom_ops") {
         // Call custom operations test function
         std::cout << "Running custom operations tests..." << std::endl;
