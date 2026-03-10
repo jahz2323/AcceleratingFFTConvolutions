@@ -64,6 +64,56 @@ __global__ void cuda_operations::_2DPool(
     }
 }
 
+// __global__ void cuda::operations::CutOffFrequency(int width, int height, cuComplex* input, cuComplex* output, float cutoff_freq){
+//     // Cut off high frequency components in the frequency domain representation of the image
+//     // Calculate the distance of each frequency component from the center of the frequency domain
+//     // If the distance is greater than the cutoff frequency, set it to zero
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     int idy = blockIdx.y * blockDim.y + threadIdx.y;
+
+//     if (idx >= width || idy >= height) return;
+
+//     int center_x = width / 2;
+//     int center_y = height / 2;
+
+//     int freq_x = idx - center_x;
+//     int freq_y = idy - center_y;
+
+//     float distance = sqrtf(freq_x * freq_x + freq_y * freq_y);
+
+//     if (distance > cutoff_freq) {
+//         output[idy * width + idx] = make_cuComplex(0.0f, 0.0f);
+//     } else {
+//         output[idy * width + idx] = input[idy * width + idx];
+//     }
+// }
+
+// void _2DSpectralPool(
+//     int in_width, int in_height, 
+//     int pool_width, int pool_height, 
+//     int stride, int padding,  
+//     cuComplex* input, cuComplex* output,
+// ){
+//         // Spectral Pooling implementation
+//         // 1. Compute 2D FFT of input
+//         // 2. Zero out high frequency components based on pool size (keep central low frequencies)
+//         // 3. Compute inverse 2D FFT to get pooled output  
+//     dim3 block(16,16);
+//     dim3 grid((in_width + block.x -1 ) / block.x, (in_height + block.y - 1) / block.y);
+
+//      // Step 1: Compute 2D FFT of input
+//     int output_width = ((in_width - pool_width + 2 * padding) / stride) + 1;
+//     int output_height = ((in_height - pool_height + 2 * padding) / stride) + 1;
+
+//     cuda_operations::Forward2DFFT(in_width, in_height, input, output);
+//     // Step 2: Zero out high frequency components
+//     int freq_cutoff_x = output_width / 2;
+//     int freq_cutoff_y = output_height / 2;
+//     cuda_operations::CutOffFrequency<<<grid, block>>>(in_width, in_height, output, output, fminf(freq_cutoff_x, freq_cutoff_y));
+//     // Step 3: Compute inverse 2D FFT to get pooled output
+//     cuda_operations::Inverse2DFFT(in_width, in_height, output, output);
+
+// }
 
 
 /**
@@ -445,24 +495,6 @@ void cuda_operations::FFT_OVA_Conv(
     int out_w = ((in_w - f_w + 2 * padding)/stride + 1);
     int out_h = ((in_h - f_h + 2 * padding)/stride + 1);
 
-    //check if input if first row is loadded correctly
-    cuComplex first_row[block_w];
-    cudaMemcpy(first_row, d_input_complex, block_w * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    std::cout << "First row of input complex data sample: " << std::endl;
-    for(int i = 0; i < block_w; i++){
-        std::cout << first_row[i].x << "i" << first_row[i].y << "j " << std::endl;
-    }
-    std::cout << std::endl;
-
-    //check filter is loaded correctly
-    cuComplex filter_sample[block_w * block_h];
-    cudaMemcpy(filter_sample, d_filter_complex, block_w * block_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    std::cout << "Filter complex data sample FIRST 25 Elements: " << std::endl;
-    for(int i = 0; i < 5  * 5  ; i++){
-        std::cout << filter_sample[i].x << "i" << filter_sample[i].y << "j " << std::endl;
-    }
-    std::cout << std::endl;
-
     dim3 block_size(16,16); 
     dim3 block_grid((block_w + block_size.x - 1) / block_size.x, 
                 (block_h + block_size.y - 1) / block_size.y);
@@ -473,12 +505,40 @@ void cuda_operations::FFT_OVA_Conv(
     std::cout << "num_blocks_w: " << num_blocks_w << " num_blocks_h: " << num_blocks_h << std::endl;
     nvtxRangePushA("FFT_OVA_Conv");
 
+    //check if d_fitler_complex has value 
+    std::vector<cuComplex> h_filter_complex(block_w * block_h);
+    cudaMemcpy(h_filter_complex.data(), d_filter_complex, block_w * block_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    float filter_sum =0 ;
+    for(int i =0; i< block_w * block_h; i++){
+        filter_sum += h_filter_complex[i].x; // sum of real parts as a simple check
+    }
+    std::cout << "Filter sum: " << filter_sum << std::endl;
+
     // Compute FFT of filter once and reuse for all blocks
     cuda_operations::Forward2DFFT(block_w, block_h, d_filter_complex, d_output_complex); // in-place FFT of filter
     cudaDeviceSynchronize();
-    cuComplex filter_check;
-    cudaMemcpy(&filter_check, d_filter_complex, sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    std::cout << "DEBUG: Filter FFT index 0: " << filter_check.x << " + " << filter_check.y << "i" << std::endl;
+
+    // DEBUG: copy back filter FFT to host and print sum of real parts as a simple check
+    
+    cudaMemcpy(h_filter_complex.data(), d_filter_complex, block_w * block_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    filter_sum =0 ;
+    for(int i =0; i< block_w * block_h; i++){
+        filter_sum += h_filter_complex[i].x; // sum of real parts as a simple check
+    }
+    std::cout << "Filter FFT sum (real parts): " << filter_sum << std::endl;
+    // cuComplex filter_check;
+    // cudaMemcpy(&filter_check, d_filter_complex, sizeof(cuComplex), cudaMemcpyDeviceToHost);
+    
+    // create a scratch buffer of d_output_complex size 
+    cuComplex* d_scratch;
+    cudaMalloc(&d_scratch, block_w * block_h * sizeof(cuComplex));
+    cudaMemset(d_scratch, 0, block_w * block_h * sizeof(cuComplex));
+
+    int num_elements = block_w * block_h;
+    int threads_per_block = 128;
+    int num_blocks = (num_elements + threads_per_block - 1) / threads_per_block;
+    
+    // std::cout << "DEBUG: Filter FFT index 0: " << filter_check.x << " + " << filter_check.y << "i" << std::endl;
     for (int block_idx = 0; block_idx < total_blocks; block_idx++){
      
         int block_x = block_idx % num_blocks_w;
@@ -497,16 +557,13 @@ void cuda_operations::FFT_OVA_Conv(
         ); 
        
         // compute FFT of block in-place in workspace
-        cuda_operations::Forward2DFFT(block_w, block_h, workspace_block, d_output_complex);
+        cuda_operations::Forward2DFFT(block_w, block_h, workspace_block, d_scratch);
         // element-wise multiply in frequency domain with filter
-        int num_elements = block_w * block_h;
-        int threads_per_block = 256;
-        int num_blocks = (num_elements + threads_per_block - 1) / threads_per_block;
         cuda_operations::elementWiseMultiplyComplex<false><<<num_blocks, threads_per_block>>>(
             block_w,block_h , workspace_block, d_filter_complex, workspace_block
         );  
          // compute inverse FFT to get convolved block in workspace
-        cuda_operations::Inverse2DFFT(block_w, block_h, workspace_block, d_output_complex);
+        cuda_operations::Inverse2DFFT(block_w, block_h, workspace_block, d_scratch);
         
         // store the y block to global memory
         cuda_operations::overlap_add_kernel<<<block_grid, block_size>>>(
@@ -517,6 +574,7 @@ void cuda_operations::FFT_OVA_Conv(
             out_w, out_h
         );
     }
+
     nvtxRangePop(); // FFT_OVA_Conv
 }
 

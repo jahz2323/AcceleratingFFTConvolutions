@@ -64,12 +64,14 @@ namespace cuda_operations {
       int block_w, int block_h
    );
    
-   void _2DSpectralPool(
-      int in_width, int in_height, 
-      int pool_width, int pool_height,
-      int stride, int padding, 
-      cuComplex* input, cuComplex* output,
-   )
+   //__global__ void CutOffFrequency(int width, int height, cuComplex* input, cuComplex* output, float cutoff_freq);
+
+   // void _2DSpectralPool(
+   //    int in_width, int in_height, 
+   //    int pool_width, int pool_height,
+   //    int stride, int padding, 
+   //    cuComplex* input, cuComplex* output,
+   // )
 
    void FFT_OVA_Conv(
       int in_width, int in_height,
