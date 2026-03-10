@@ -23,65 +23,82 @@ void train::TestCustomOperator(){
         std::cerr << "Failed to load library: " << dlerror() << std::endl;
         return;
     }
+    std::vector<float> input_data = {
+        1, 2, 3, 0,
+        0, 1, 2, 3,
+        3, 0, 1, 2,
+        2, 3, 0, 1
+    };
+    std::vector<float> filter_data = {
+        1, 0,
+        0, 1
+    };
+    std::vector<float> expected_output_data = {
+        2, 4, 6,
+        0, 2, 4,
+        6, 0, 2
+    };
+    torch::Device device(torch::kCUDA);
+    torch::Tensor test_tensor = torch::from_blob(input_data.data(), {1, 1, 4, 4}, torch::kFloat).to(device);
+    torch::Tensor filter_tensor = torch::from_blob(filter_data.data(), {1,1,2,2}, torch::kFloat).to(device);
+    torch::Tensor expected_output = torch::from_blob(expected_output_data.data(), {1, 1, 3, 3}, torch::kFloat).to(device);
+    std::cout << "test_tensor: " << test_tensor << std::endl;
+    std::cout << "filter_tensor: " << filter_tensor << std::endl;
 
-    torch::Tensor test_tensor = torch::randint(0, 10, {100}, torch::kCUDA).to(torch::kInt);
+    int8_t stride = 1;
+    int8_t padding = 0;
     // std::cout << "Test tensor: " << test_tensor << std::endl;
     auto op = torch::Dispatcher::singleton()
-                .findSchemaOrThrow("my_ops::custom_allreduce", "")
-                .typed<torch::Tensor (torch::Tensor)>();
+                .findSchemaOrThrow("my_ops::custom_2DConv", "")
+                .typed<torch::Tensor (torch::Tensor, torch::Tensor, int8_t, int8_t)>();
     
-    torch::Tensor reduced_sum = op.call(test_tensor);
+    torch::Tensor conv_output = op.call(test_tensor, filter_tensor, stride, padding);
     torch::cuda::synchronize();
-    std::cout << "Reduced sum: " << reduced_sum << std::endl;
-}
-/**
-    @brief Sequential data loading for CIFAR#
-    TODO: Parallelize data loading using multithreading 
-*/
-CIFAR train::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
-    std::string cifar_bin_path = "data/cifar/cifar-10-batches-bin/data_batch_1.bin";
-    std::string full_path = root + "/" + cifar_bin_path;
-    CIFAR dataset(mode);
-    
-    // DataHandling::load_binary_file(full_path);
-    // torch::data::Example<> example = dataset.get(0); // 2 tensors: image and label
-    // // print out size of dataset and example image and label in tensor form
-    // std::cout << "CIFAR Dataset size: " << dataset.size().value() << std::endl;
-    // std::cout << "Example image tensor size: " << example.data.sizes() << std::endl;
-    // std::cout << "Example label tensor value: " << example.target << std::endl;
-    
-    // For each bin file in /train - read in and save to dataset object 
-
-    //start time 
-    clock_t start_time = clock();
-    CIFARdata cifar_data;
-    for (const auto &entry: fs::directory_iterator(root + "/data/cifar/cifar-10-batches-bin/")){
-        // if mode is train - only read train files
-        if (mode == CIFAR::Mode::TRAIN && entry.path().string().find("data_batch") != std::string::npos){
-            std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
-            cifar_data = DataHandling::load_binary_file(entry.path().string());
-        }
-        // if mode is test - only read test file
-        else if (mode == CIFAR::Mode::TEST && entry.path().string().find("test_batch") != std::string::npos){
-            std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
-            cifar_data = DataHandling::load_binary_file(entry.path().string());
-        }
+    std::cout << "Output of custom 2D convolution operator: " << conv_output << std::endl;
+    std::cout << "Expected output: " << expected_output << std::endl;
+    if (torch::allclose(conv_output, expected_output)) {
+        std::cout << "Custom 2D convolution operator test passed!" << std::endl;
+    } else {
+        std::cout << "Custom 2D convolution operator test failed!" << std::endl;
     }
+    {
+        std::cout << "Testing custom autograd function for 2D convolution..." << std::endl;
+        // test grad function 
+        torch::Tensor input = torch::randn({1, 1, 4, 4}, torch::kCUDA); // dosent require grad if its just one layer and its input
+        torch::Tensor weight = torch::randn({1, 1, 2, 2}, torch::kCUDA).requires_grad_(true); // we want to update weights wrt loss, so requires grad true
+        //torch::Tensor bias = torch::randn({1}, torch::kCUDA).requires_grad_(true);
+        int8_t stride = 1;
+        int8_t padding = 0;
+        auto y = myConv2DFunction::apply(input, weight, stride, padding);
 
-    // end time
-    clock_t end_time = clock();
-    double elapsed_time = double(end_time - start_time) / CLOCKS_PER_SEC;
-    std::cout << "Time taken to load all CIFAR binary files: " << elapsed_time << " seconds" << std::endl;
-    /**
-    @note 5 seconds in total to load all 5 CIFAR bin files (~10,000 images each) on CPU
-    */
-    // check total size of dataset 
-    std::cout << "Total CIFAR Dataset size after loading all bin files: " << cifar_data.images.size() << std::endl;
+        auto z = y.mean(); 
+        std::cout << "Output of custom autograd convolution function: " << y << std::endl;
+        std::cout << "Mean of output (loss): " << z.item<float>() << std::endl;
+        z.backward();
+
+        std::cout << "Input gradient: " << input.grad() << std::endl;
+        std::cout << "Weight gradient: " << weight.grad() << std::endl;
+    }
+    // test_custom autograd function
+    // int input_features = 10;
+    // int output_features = 5;
+    // int batch_size = 4;
+
+    // torch::Tensor input = torch::randn({batch_size, input_features}, torch::kCUDA).requires_grad_(true);
+    // torch::Tensor weight = torch::randn({output_features, input_features}, torch::kCUDA).requires_grad_(true);
+    // torch::Tensor bias = torch::randn({output_features}, torch::kCUDA).requires_grad_(true);
+
+    // auto y = MyLinearFunction::apply(input, weight, bias);
     
-    // pass data to dataset object
-    dataset.setData(cifar_data.images, cifar_data.labels);
-    return dataset;
+    // // calculate loss 
+    // auto loss = y.mean();
+    // loss.backward();
+
+    // std::cout << "Input gradient: " << input.grad() << std::endl;
+    // std::cout << "Weight gradient: " << weight.grad() << std::endl;
+    // std::cout << "Bias gradient: " << bias.grad() << std::endl;
 }
+
 
 /**
     Function to train AlexNet model on CIFAR dataset

@@ -11,10 +11,7 @@ __global__ void gpu_all_reduce(int* sum, int* data, int n){
     }
     atomicAdd(sum, local_temp);
 }
-/*Use parallel reduction */
-__global__ void gpu_all_reduce_optimized(int* sum, int* data, int n){
 
-}
 void cpu_all_reduce(int* sum, int* data, int n){
     int temp_sum = 0;
     for (int i = 0; i < n; ++i) {

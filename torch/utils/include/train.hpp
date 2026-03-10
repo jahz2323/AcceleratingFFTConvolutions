@@ -13,6 +13,8 @@
 #include "AlexNet.hpp"
 #include "resnet.hpp"
 
+#include "customAutograd.cuh"
+
 namespace train{
     HandKeypoint KeypointFunction(const std::string &DATAPATH);
     void TestCustomOperator();
