@@ -1,5 +1,14 @@
 #include "utils.cuh"
 
+void utils::printGPUMemoryInfo(const std::string& label){
+    size_t free_mem, total_mem;
+    cudaError_t err = cudaMemGetInfo(&free_mem, &total_mem);
+    if(err != cudaSuccess){
+        std::cerr << "Error getting GPU memory info: " << cudaGetErrorString(err) << std::endl;
+        return;
+    }
+    std::cout << label << " - GPU Memory Info: Free: " << free_mem / (1024.0 * 1024.0) << " MB, Total: " << total_mem / (1024.0 * 1024.0) << " MB" << std::endl;
+}
 
 int utils::nextPowerOfTwo(int n){
     int count = 0;
@@ -31,6 +40,19 @@ float utils::MeasureError(const std::vector<float>& output1, const std::vector<f
     }
     mse /= static_cast<float>(output1.size());
     return mse;
+}
+bool utils::validateResults(const std::vector<float>& output1, const std::vector<float>& output2, float tolerance = 1e-1f){
+    if(output1.size() != output2.size()){
+        throw std::invalid_argument("Output vectors must be of the same size to validate results.");
+    }
+    for(size_t i = 0; i < output1.size(); ++i){
+        if(std::abs(output1[i] - output2[i]) > tolerance){
+            // stdout the difference 
+            std::cout << "Difference at index " << i << " : " << std::abs(output1[i] - output2[i]) << " exceeds tolerance of " << tolerance << std::endl;
+            return false; // Results are not valid within the specified tolerance
+        }
+    }
+    return true; // All results are valid within the specified tolerance
 }
 
 /**
@@ -101,6 +123,7 @@ void utils::saveOutputImage(
     int out_width,
     int out_height
 ){
+    
     // create cv::Mat from output vector
     cv::Mat image_float(out_height, out_width, CV_32FC1, const_cast<float*>(output.data()));
 
@@ -115,7 +138,7 @@ void utils::saveOutputImage(
     } else {
         normalised = cv::Mat::zeros(out_height, out_width, CV_8UC1);
     }
-
+    
     bool success = cv::imwrite(path_to_file_with_filename, normalised);
     if(!success){
         throw std::runtime_error("Failed to save image to: " + path_to_file_with_filename);
