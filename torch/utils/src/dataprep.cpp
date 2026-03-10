@@ -182,11 +182,12 @@ torch::data::Example<> HandKeypoint::get(size_t index) {
     return {image_tensor, keypoints};
 
 };
+
 /**
     @brief Sequential data loading for CIFAR#
     TODO: Parallelize data loading using multithreading 
 */
-CIFAR CIFAR::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
+CIFAR::CIFAR(const std::string& root, CIFAR::Mode mode){
     std::string cifar_bin_path = "data/cifar/cifar-10-batches-bin/data_batch_1.bin";
     std::string full_path = root + "/" + cifar_bin_path;
     CIFAR dataset(mode);
@@ -228,7 +229,6 @@ CIFAR CIFAR::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
     
     // pass data to dataset object
     dataset.setData(cifar_data.images, cifar_data.labels);
-    return dataset;
 }
 
 /**

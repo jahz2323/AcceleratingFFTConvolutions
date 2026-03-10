@@ -72,7 +72,8 @@ class CIFAR : public torch::data::datasets::Dataset<CIFAR, torch::data::Example<
         TEST
     };
     explicit CIFAR(Mode mode) : mode_(mode) {};
-    CIFAR TestReadingCIFARBin(std::string root, CIFAR::Mode mode);
+    CIFAR(const std::string& root, CIFAR::Mode mode);
+    // CIFAR TestReadingCIFARBin(std::string root, CIFAR::Mode mode);
     inline torch::data::Example<> get(size_t index) override { return {images_[index], labels_[index]};}
     inline torch::optional<size_t> size() const override {return images_.size();};
     inline void setData(std::vector<torch::Tensor> images, std::vector<torch::Tensor> labels){

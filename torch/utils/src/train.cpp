@@ -115,8 +115,8 @@ void train::trainCIFAR(){
     torch::Device device(torch::kCUDA);
     auto model = std::make_shared<AlexNet>();
 
-    auto train_dataset = (train::TestReadingCIFARBin(root.string(), CIFAR::Mode::TRAIN)).map(torch::data::transforms::Stack<>()); // no normalization steps atm
-    auto test_dataset = (train::TestReadingCIFARBin(root.string(), CIFAR::Mode::TEST)).map(torch::data::transforms::Stack<>()); // no normalization steps atm
+    auto train_dataset = (CIFAR(root.string(), CIFAR::Mode::TRAIN)).map(torch::data::transforms::Stack<>()); // no normalization steps atm
+    auto test_dataset = (CIFAR(root.string(), CIFAR::Mode::TEST)).map(torch::data::transforms::Stack<>()); // no normalization steps atm
 
     auto num_train_samples = train_dataset.size().value();
     std::cout << "Number of training samples: " << num_train_samples << std::endl;

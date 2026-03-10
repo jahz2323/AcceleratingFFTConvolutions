@@ -9,6 +9,7 @@
 #include <thread> // might parallelize data loading
 #include <chrono>
 #include <dlfcn.h>
+
 #include "dataprep.hpp" 
 #include "AlexNet.hpp"
 #include "resnet.hpp"
@@ -20,5 +21,5 @@ namespace train{
     void TestCustomOperator();
     void trainCIFAR();
     void trainResNet();
-    CIFAR TestReadingCIFARBin(std::string root, CIFAR::Mode mode);
+    
 }

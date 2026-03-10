@@ -5,7 +5,7 @@ void inference::runInference(const std::string& model_path){
     std::filesystem::path project_root = std::filesystem::current_path().parent_path().parent_path().parent_path();
 
     // label file: data/cifar/cifar-10-labels.txt
-    CIFAR dataset = train::TestReadingCIFARBin(project_root.string(), CIFAR::Mode::TEST);
+    CIFAR dataset(project_root.string(), CIFAR::Mode::TEST);
     std::filesystem::path label_file_path = project_root / "data" / "cifar" / "cifar-10-labels.txt";
     
     torch::Device device(torch::kCUDA);
