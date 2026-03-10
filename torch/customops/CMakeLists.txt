@@ -1,4 +1,8 @@
-add_library(customops SHARED kernels/src/all_reduce.cu operators/src/extension.cpp)
+add_library(customops SHARED 
+    kernels/src/all_reduce.cu 
+    kernels/src/convolution.cu
+    operators/src/extension.cpp
+)
 
 target_link_libraries(customops PUBLIC "${TORCH_LIBRARIES}")
 

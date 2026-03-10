@@ -3,7 +3,9 @@ add_library(utils STATIC
     src/inference.cpp 
     src/train.cpp
 )
-target_link_libraries(utils PUBLIC models 
+target_link_libraries(utils PUBLIC 
+    models 
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${OpenCV_LIBS} 
     ${TORCH_LIBRARIES} 
 )

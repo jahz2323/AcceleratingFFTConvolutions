@@ -182,7 +182,54 @@ torch::data::Example<> HandKeypoint::get(size_t index) {
     return {image_tensor, keypoints};
 
 };
+/**
+    @brief Sequential data loading for CIFAR#
+    TODO: Parallelize data loading using multithreading 
+*/
+CIFAR CIFAR::TestReadingCIFARBin(std::string root, CIFAR::Mode mode){
+    std::string cifar_bin_path = "data/cifar/cifar-10-batches-bin/data_batch_1.bin";
+    std::string full_path = root + "/" + cifar_bin_path;
+    CIFAR dataset(mode);
+    
+    // DataHandling::load_binary_file(full_path);
+    // torch::data::Example<> example = dataset.get(0); // 2 tensors: image and label
+    // // print out size of dataset and example image and label in tensor form
+    // std::cout << "CIFAR Dataset size: " << dataset.size().value() << std::endl;
+    // std::cout << "Example image tensor size: " << example.data.sizes() << std::endl;
+    // std::cout << "Example label tensor value: " << example.target << std::endl;
+    
+    // For each bin file in /train - read in and save to dataset object 
 
+    //start time 
+    clock_t start_time = clock();
+    CIFARdata cifar_data;
+    for (const auto &entry: fs::directory_iterator(root + "/data/cifar/cifar-10-batches-bin/")){
+        // if mode is train - only read train files
+        if (mode == CIFAR::Mode::TRAIN && entry.path().string().find("data_batch") != std::string::npos){
+            std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
+            cifar_data = DataHandling::load_binary_file(entry.path().string());
+        }
+        // if mode is test - only read test file
+        else if (mode == CIFAR::Mode::TEST && entry.path().string().find("test_batch") != std::string::npos){
+            std::cout << "Loading CIFAR binary file: " << entry.path().string() << std::endl;
+            cifar_data = DataHandling::load_binary_file(entry.path().string());
+        }
+    }
+
+    // end time
+    clock_t end_time = clock();
+    double elapsed_time = double(end_time - start_time) / CLOCKS_PER_SEC;
+    std::cout << "Time taken to load all CIFAR binary files: " << elapsed_time << " seconds" << std::endl;
+    /**
+    @note 5 seconds in total to load all 5 CIFAR bin files (~10,000 images each) on CPU
+    */
+    // check total size of dataset 
+    std::cout << "Total CIFAR Dataset size after loading all bin files: " << cifar_data.images.size() << std::endl;
+    
+    // pass data to dataset object
+    dataset.setData(cifar_data.images, cifar_data.labels);
+    return dataset;
+}
 
 /**
     @brief Load CIFAR binary file and populate dataset
