@@ -460,12 +460,15 @@ __global__ void cuda_operations::tiling_and_extract_kernel(
     }
 }
 
-
 void cuda_operations::FFT_OVA_Conv(
     int in_width, int in_height, 
     int filter_width, int filter_height, 
     int stride, int padding,
-    cuComplex* d_input_complex, cuComplex* d_filter_complex, cuComplex* d_output_complex, cuComplex* workspace_block,
+    int num_streams,
+    cudaStream_t streams[],
+    cuComplex* d_input_complex, cuComplex* d_filter_complex, 
+    cuComplex* d_output_complex, cuComplex* workspace_block,
+    cuComplex* d_workspaces[], cuComplex* d_scratches[],
     int segment_w, int segment_h,
     int block_w, int block_h,
     int num_blocks_w, int num_blocks_h,
@@ -494,7 +497,7 @@ void cuda_operations::FFT_OVA_Conv(
     int f_h = filter_height;
     int out_w = ((in_w - f_w + 2 * padding)/stride + 1);
     int out_h = ((in_h - f_h + 2 * padding)/stride + 1);
-
+    std::cout << "Output dimensions: " << out_w << " x " << out_h << std::endl;
     dim3 block_size(16,16); 
     dim3 block_grid((block_w + block_size.x - 1) / block_size.x, 
                 (block_h + block_size.y - 1) / block_size.y);
@@ -529,18 +532,22 @@ void cuda_operations::FFT_OVA_Conv(
     // cuComplex filter_check;
     // cudaMemcpy(&filter_check, d_filter_complex, sizeof(cuComplex), cudaMemcpyDeviceToHost);
     
+     // ENTIRE SNIPPET CAN BE MANAGED IN SETUP GPU
     // create a scratch buffer of d_output_complex size 
-    cuComplex* d_scratch;
-    cudaMalloc(&d_scratch, block_w * block_h * sizeof(cuComplex));
-    cudaMemset(d_scratch, 0, block_w * block_h * sizeof(cuComplex));
+    // cuComplex* d_scratch;
+    // cudaMalloc(&d_scratch, block_w * block_h * sizeof(cuComplex));
+    // cudaMemset(d_scratch, 0, block_w * block_h * sizeof(cuComplex));
+
 
     int num_elements = block_w * block_h;
     int threads_per_block = 128;
     int num_blocks = (num_elements + threads_per_block - 1) / threads_per_block;
     
+    //Need a workspace and scratch space per stream 
     // std::cout << "DEBUG: Filter FFT index 0: " << filter_check.x << " + " << filter_check.y << "i" << std::endl;
     for (int block_idx = 0; block_idx < total_blocks; block_idx++){
-     
+        int stream_idx = block_idx % num_streams;
+
         int block_x = block_idx % num_blocks_w;
         int block_y = block_idx / num_blocks_w;
 
@@ -549,7 +556,7 @@ void cuda_operations::FFT_OVA_Conv(
 
         // extract block to workspace with zero padding
         cuda_operations::tiling_and_extract_kernel<<<block_grid, block_size>>>(
-            d_input_complex, workspace_block, 
+            d_input_complex, d_workspaces[stream_idx], 
             in_w, in_w, 
             start_x, 
             start_y, 
@@ -557,22 +564,27 @@ void cuda_operations::FFT_OVA_Conv(
         ); 
        
         // compute FFT of block in-place in workspace
-        cuda_operations::Forward2DFFT(block_w, block_h, workspace_block, d_scratch);
+        cuda_operations::Forward2DFFT(block_w, block_h, d_workspaces[stream_idx], d_scratches[stream_idx]);
         // element-wise multiply in frequency domain with filter
         cuda_operations::elementWiseMultiplyComplex<false><<<num_blocks, threads_per_block>>>(
-            block_w,block_h , workspace_block, d_filter_complex, workspace_block
+            block_w,block_h , d_workspaces[stream_idx], d_filter_complex, d_workspaces[stream_idx]
         );  
          // compute inverse FFT to get convolved block in workspace
-        cuda_operations::Inverse2DFFT(block_w, block_h, workspace_block, d_scratch);
+        cuda_operations::Inverse2DFFT(block_w, block_h, d_workspaces[stream_idx], d_scratches[stream_idx]);
         
         // store the y block to global memory
         cuda_operations::overlap_add_kernel<<<block_grid, block_size>>>(
-            workspace_block, d_output_complex,
+            d_workspaces[stream_idx], d_output_complex,
             block_w, block_h, 
             start_x, 
             start_y,
             out_w, out_h
         );
+    }
+
+    //SYNC STREAMS
+    for (int i = 0; i < num_streams; i++) {
+        cudaStreamSynchronize(streams[i]);
     }
 
     nvtxRangePop(); // FFT_OVA_Conv

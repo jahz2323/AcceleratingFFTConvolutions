@@ -34,7 +34,7 @@ public:
     };
     struct ConvContext {
         bool use_ova;
-        int target_ova_size = 32; 
+        int target_ova_size = 128; // default block size for OVA, can be tuned based on filter and input sizes, and GPU capabilities
 
         int in_h, in_w, f_h, f_w, stride, pad; 
         int out_h, out_w;
@@ -46,6 +46,10 @@ public:
         int segment_h, segment_w;
         int num_blocks_h, num_blocks_w;
         int total_blocks;
+        static constexpr int num_streams = 4; // for OVA convolution, can be tuned based on GPU capabilities and block count
+        cudaStream_t streams[num_streams]; // array of CUDA streams for concurrent block processing in OVA convolution
+        cuComplex* d_workspaces[num_streams]; // workspace for storing FFTs of blocks in OVA convolution
+        cuComplex* d_scratches[num_streams];
         cuComplex* workspace_block; 
 
         //Host Data 
@@ -76,6 +80,7 @@ public:
         struct Results{
             float time_ms;
             float mse;
+            size_t memory_usage_bytes;
             std::vector<float> data; 
         };
         std::map<std::string, Results> results;
@@ -165,5 +170,12 @@ public:
         float mse,
         float mse_optimised = 0.0f, 
         float mse_cufft = 0.0f 
+    );
+    static void memory_usage(
+        ConvContext& ctx,
+        const std::string& full_path, 
+        size_t Direct_Conv2D_memory_bytes,
+        size_t FFT_Conv2D_memory_bytes,
+        size_t FFT_OVA_Conv2D_memory_bytes = 0 // incase not called
     );
 };

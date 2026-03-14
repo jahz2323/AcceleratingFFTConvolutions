@@ -2,6 +2,54 @@
 #include "dataprep.hpp"
 #include <nvtx3/nvToolsExt.h> // For NVTX profiling ranges
 
+void convolution_test::memory_usage(
+    ConvContext& ctx,
+    const std::string& full_path, 
+    size_t Direct_Conv2D_memory_bytes,
+    size_t FFT_Conv2D_memory_bytes,
+    size_t FFT_OVA_Conv2D_memory_bytes // incase not called default = 0
+){
+    /*
+        CTX:
+        int in_h, in_w, f_h, f_w, stride, pad; 
+        int out_h, out_w;
+        int fft_h, fft_w;
+    */
+    
+    std::vector<std::string> memory_usage_header = {
+        "Method",
+        "Input_Dimensions",
+        "Filter_Dimensions",
+        "Memory_usage_in_bytes"
+    };
+
+    std::vector<std::string> memory_usage_contnet = {
+        "Direct_Conv2D",
+        std::to_string(ctx.in_h) + "x" + std::to_string(ctx.in_w),
+        std::to_string(ctx.f_h) + "x" +  std::to_string(ctx.f_w),
+        std::to_string(Direct_Conv2D_memory_bytes),
+        "FFT_Conv2D",
+        std::to_string(ctx.in_h) + "x" + std::to_string(ctx.in_w),
+        std::to_string(ctx.f_h) + "x" +  std::to_string(ctx.f_w),
+        std::to_string(FFT_Conv2D_memory_bytes),
+        "FFT_OVA_Conv2D",
+        std::to_string(ctx.in_h) + "x" + std::to_string(ctx.in_w),
+        std::to_string(ctx.f_h) + "x" +  std::to_string(ctx.f_w),
+        std::to_string(FFT_OVA_Conv2D_memory_bytes),
+    };
+
+    std::filesystem::path base_path(full_path);
+    std::string csv_path = base_path.string() + ".csv";
+     // Get directory path build/xxx/
+    std::filesystem::path dir = base_path.parent_path();
+    std::filesystem::path memory_dir = dir / "results/memory";
+    std::string memory_csv_name = (full_path + (".csv"));
+
+    // Write MSE results to CSV file, if file already exists, append new results as a new row, if not create new file and write header and results, if csv is not present, create a new file. If csv is present, check if header is present, if not write header, then append results as a new row. If csv is present and header is present, just append results as a new row.
+    utils::writeCSV(memory_csv_name, memory_usage_contnet, memory_usage_header);
+}
+
+
 void convolution_test::mse(
     ConvContext& ctx,
     bool image_test,
@@ -30,7 +78,7 @@ void convolution_test::mse(
         std::to_string(in_height) + "x" + std::to_string(in_width),
         std::to_string(filter_height) + "x" +  std::to_string(filter_width),
         std::to_string(mse_val),
-    };
+    }; 
 
     std::filesystem::path base_path(full_path);
 
@@ -45,38 +93,6 @@ void convolution_test::mse(
 
     // Write MSE results to CSV file, if file already exists, append new results as a new row, if not create new file and write header and results, if csv is not present, create a new file. If csv is present, check if header is present, if not write header, then append results as a new row. If csv is present and header is present, just append results as a new row.
     utils::writeCSV(mse_csv_name, mse_csv_content, mse_csv_header);
-
-    // Save output images for visual comparison if this is an image test
-    if(image_test){
-        if (!ctx.use_ova){
-            /**
-                Image Saving:
-                - Save output images from direct convolution and spectral convolution for visual comparison
-                - Filenames should be descriptive and include test parameters for easy identification, e.g.:
-            */
-    
-            //append method to stem and add png extension
-            std::string direct_conv_filename = (images_dir / ("DirectConv2D_" + stem + ".png")).string();
-            std::string spectral_conv_filename = (images_dir / ("SpectralConv2D_" + stem + ".png")).string();
-            
-            // // save to results/images folder with filename as path_to_file_with_filename - fix stem  
-
-            //Print out where images are being saved
-            std::cout << "Saving images to\n: Direct Conv2D Output Image: " << direct_conv_filename << "\nSpectral Conv2D Output Image: " << spectral_conv_filename << std::endl;
-            
-            // Save direct convolution output image
-            utils::saveOutputImage(direct_conv_filename, ctx.results["Custom_2DConv"].data, ctx.out_w, ctx.out_h);
-            // Save spectral convolution output image
-            utils::saveOutputImage(spectral_conv_filename, ctx.results["Spectral_Conv2D"].data, ctx.out_w, ctx.out_h);
-        }
-        else{
-            std::string direct_conv_filename = (images_dir / ("DirectConv2D_" + stem + ".png")).string();
-            std::string spectral_conv_filename = (images_dir / ("FFT_OVA_Conv2D_" + stem + ".png")).string();
-            std::cout << "Saving FFT OVA Conv output image to\n: " << spectral_conv_filename << std::endl;
-            utils::saveOutputImage(spectral_conv_filename, ctx.results["FFT_OVA_Conv2D"].data, ctx.out_w, ctx.out_h);
-            utils::saveOutputImage(direct_conv_filename, ctx.results["Custom_2DConv"].data, ctx.out_w, ctx.out_h);
-        }
-    }
 }
 
 void convolution_test::runtime(
@@ -145,7 +161,32 @@ void convolution_test::runtime(
 
 //free context 
 void convolution_test::freeContext(ConvContext& ctx){
-    //Free device memory
+    ctx.t_input = torch::Tensor(); 
+    ctx.t_filter = torch::Tensor();
+    ctx.t_output = torch::Tensor();
+    if (ctx.use_ova) {
+        // 1. Free the individual workspaces and scratches allocated per stream
+        for (int i = 0; i < ctx.num_streams; ++i) {
+            if (ctx.d_workspaces[i]) cudaFree(ctx.d_workspaces[i]);
+            if (ctx.d_scratches[i])  cudaFree(ctx.d_scratches[i]);
+            
+            // 2. Destroy the stream handle
+            cudaStreamDestroy(ctx.streams[i]);
+            ctx.streams[i] = nullptr;
+            ctx.workspace_block = nullptr;
+            ctx.d_padded_filter_OVA = nullptr;
+        }
+        //3. Remove OVA Specific buffers
+        cudaFree(ctx.workspace_block);
+        cudaFree(ctx.d_padded_filter_OVA);
+    }
+    
+    //2. Clear pytorch tensors to free associated GPU memory
+    ctx.t_input = torch::Tensor();
+    ctx.t_filter = torch::Tensor();
+    ctx.t_output = torch::Tensor();
+
+    // 3. Free the standard individual pointers
     cudaFree(ctx.d_input_float);
     cudaFree(ctx.d_filter_float);
     cudaFree(ctx.d_output_float);
@@ -155,6 +196,23 @@ void convolution_test::freeContext(ConvContext& ctx){
     cudaFree(ctx.d_fft_output_float);
     cudaFree(ctx.d_saved_filter_complex);
     cudaFree(ctx.d_saved_input_complex);
+    cudaFree(ctx.d_saved_filter_float);
+    cudaFree(ctx.d_saved_input_float);
+    
+
+    //4. Reset all pointers to nullptr for safety
+    ctx.d_input_float = nullptr;
+    ctx.d_filter_float = nullptr;
+    ctx.d_output_float = nullptr;
+    ctx.d_input_complex = nullptr;
+    ctx.d_filter_complex = nullptr;
+    ctx.d_output_complex = nullptr;
+    ctx.d_fft_output_float = nullptr;
+    ctx.d_saved_filter_complex = nullptr;
+    ctx.d_saved_input_complex = nullptr;
+    ctx.d_saved_filter_float = nullptr;
+    ctx.d_saved_input_float = nullptr;
+    ctx.results.clear();
 }
 
 //CuFFT Runner 
@@ -241,6 +299,7 @@ void convolution_test::run_torch(ConvContext& ctx)
 //Spectral Conv2D Runner
 void convolution_test::run_FFTConv(ConvContext& ctx)
 {       
+   
     // == restore from scratch for fair comparison ==
     // 1. Reset complex buffers to saved state before running spectral conv2d, to ensure same input data for both spectral methods and fair MSE comparison, since FFT-based convolution is non-deterministic due to floating point precision issues and different execution paths in the kernel
     cudaMemcpy(ctx.d_input_complex, ctx.d_saved_input_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
@@ -259,8 +318,11 @@ void convolution_test::run_FFTConv(ConvContext& ctx)
         cuda_operations::FFT_OVA_Conv(
             ctx.in_w, ctx.in_h, ctx.f_w, ctx.f_h,
             ctx.stride, ctx.pad,
+            ctx.num_streams,
+            ctx.streams,
             ctx.d_input_complex, ctx.d_filter_complex, 
             ctx.d_output_complex, ctx.workspace_block,
+            ctx.d_workspaces, ctx.d_scratches,
             ctx.segment_w, ctx.segment_h,
             ctx.block_w, ctx.block_h,
             ctx.num_blocks_w, ctx.num_blocks_h,
@@ -512,8 +574,8 @@ void convolution_test::initaliseContext(
             test_filter.convertTo(test_filter_float, CV_32F);
             int cx = ctx.block_w / 2;
             int cy = ctx.block_h / 2;
-            int filter_cx = f_w / 2;
-            int filter_cy = f_h / 2;
+            // int filter_cx = f_w / 2;
+            // int filter_cy = f_h / 2;
             for (int i = 0; i < f_h; ++i) {
                 for (int j = 0; j < f_w; ++j) {
                     int x = (i - cy + ctx.block_h) % ctx.block_h;
@@ -573,8 +635,8 @@ void convolution_test::initaliseContext(
         // place input image centred in padded_input for correct convolution output positioning in frequency domain
         int cx = ctx.fft_w / 2;
         int cy = ctx.fft_h / 2;
-        int input_cx = in_w / 2;
-        int input_cy = in_h / 2;
+        // int input_cx = in_w / 2;
+        // int input_cy = in_h / 2;
         for (int i = 0; i < in_h; ++i) {
             for (int j = 0; j < in_w; ++j) {
                 int x = (i - cy + ctx.fft_h) % ctx.fft_h;
@@ -607,9 +669,11 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
     nvtxRangePushA("Setup_Total");
 
     if (!isPooling){
+        
         //A. Direct Conv2D Memory Setup
         std::cout << "Direct Conv Float ptrs" << std::endl; 
         nvtxRangePushA("Setup_Direct_Malloc");
+        
         // == Allocate device memory for input, filter and output in float format ==
         // == Get screenshot of inital memory state before any allocations for baseline ==
         cudaMemGetInfo(&free_start, &total);
@@ -625,6 +689,11 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
         cudaMemGetInfo(&free_end, &total);
         actual_cost = free_start - free_end;
         printf("Cumulative Memory after Direct Conv2D float allocations: %zu bytes\n", actual_cost);
+        cudaDeviceSynchronize();
+        
+        //Record Memory for Direct Conv here: 
+        ctx.results["Custom_2DConv"].memory_usage_bytes = actual_cost; 
+        
 
         // Scratch space for fft-ova-conv
         cudaMalloc((void**)&ctx.d_saved_input_float, ctx.in_w * ctx.in_h * sizeof(float));
@@ -645,6 +714,7 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             ctx.t_filter = filter_raw.clone();
             ctx.t_output = output_raw.clone();
             nvtxRangePushA("Padding Tensors");
+            
             //2. Pad tensors to FFT dimensions
             int pad_h = ctx.fft_h - ctx.in_h;
             int pad_w = ctx.fft_w - ctx.in_w;
@@ -652,6 +722,7 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             auto filter_padded = torch::constant_pad_nd(filter_raw, {0, ctx.fft_w - ctx.f_w, 0, ctx.fft_h - ctx.f_h}, 0).to(device);
             nvtxRangePop();
             nvtxRangePop();
+            
             // == Measure Memory reserved for padded tensors 
             cudaMemGetInfo(&free_end, &total);
             actual_cost = free_start - free_end;
@@ -664,7 +735,6 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cudaMalloc((void**)&ctx.d_input_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
             cudaMalloc((void**)&ctx.d_filter_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
             cudaMalloc((void**)&ctx.d_output_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
-            // d_fft_output_float - to write real part of FFT output for MSE calculation and saving results, allocated with fft dims for simplicity of indexing
             cudaMalloc((void**)&ctx.d_fft_output_float, ctx.fft_w * ctx.fft_h * sizeof(float));
             nvtxRangePop();
 
@@ -672,7 +742,11 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cudaMemGetInfo(&free_end, &total);
             actual_cost = free_start - free_end;
             printf("Cumulative Memory after FFT Conv2D Complex allocations: %zu bytes\n", actual_cost);
-            
+            cudaDeviceSynchronize();
+
+            //Record FFT_CONV2D bytes here 
+            ctx.results["Spectral_Conv2D"].memory_usage_bytes = actual_cost;
+
             //D. Convert Padded Tensors to Complex format and copy to device
             //Extract raw pointers from padded tensors
             float* padded_input_ptr = input_padded.data_ptr<float>();
@@ -689,6 +763,7 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cuda_operations::float2complex<<<fft_blocksPerGrid, fft_threadsPerBlock>>>(
                 ctx.fft_w, ctx.fft_h, padded_filter_ptr, ctx.d_filter_complex
             );
+            
             // Initialize output complex array to zeros
             cudaMemset(ctx.d_output_complex, 0, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
             nvtxRangePop();
@@ -698,16 +773,17 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cudaMalloc((void**)&ctx.d_saved_filter_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
             cudaMemcpy(ctx.d_saved_input_complex, ctx.d_input_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
             cudaMemcpy(ctx.d_saved_filter_complex, ctx.d_filter_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-
         }
         // OVA-specific memory setup 
         else {
             int in_h = ctx.in_h; int in_w = ctx.in_w;
-            int fft_h = ctx.block_h; int fft_w = ctx.block_w; // filter is padded to block dimensions for OVA convolution
+            //int fft_h = ctx.block_h; int fft_w = ctx.block_w; // filter is padded to block dimensions for OVA convolution
             int out_h = ctx.out_h; int out_w = ctx.out_w;
+            
             //B Skip tensor padding, pass input and filter as contigous cuComplex arrays 
             std::cout << "FFT-OVA-CONV cuComplex ptrs" << std::endl; 
             nvtxRangePushA("OVA_FFTConv_Malloc_and_Copy");
+            
             //C Allocate complex memory for OVA convolution, using block dimensions for efficient block-wise FFT processing
             cudaMemGetInfo(&free_start, &total);
             cudaMalloc((void**)&ctx.d_input_complex, in_h * in_w * sizeof(cuComplex)); 
@@ -717,11 +793,22 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cudaMalloc((void**)&ctx.workspace_block, ctx.block_h * ctx.block_w * sizeof(cuComplex)); // workspace for block-wise FFT processing
             cudaMalloc((void**)&ctx.d_fft_output_float, out_h * out_w * sizeof(float)); // to write real part of FFT output for MSE calculation and saving results, allocated with output dims since we will only copy valid conv region back to host
             cudaMalloc((void**)&ctx.d_padded_filter_OVA, ctx.block_h * ctx.block_w * sizeof(float)); // padded filter for OVA, allocated with block dims for simplicity of indexing in kernels
+            
+            size_t single_block_size = ctx.block_h * ctx.block_w * sizeof(cuComplex);
+            for (int i =0; i < ctx.num_streams; ++i){
+                cudaMalloc((void**)&ctx.d_workspaces[i], single_block_size); // workspace for storing FFTs of all blocks
+                cudaMalloc((void**)&ctx.d_scratches[i], single_block_size); // scratch space for intermediate computations in OVA convolution
+                cudaStreamCreate(&ctx.streams[i]);
+            }
             // == Measure Memory reserved for OVA convolution complex buffers ==
             cudaMemGetInfo(&free_end, &total);
             actual_cost = free_start - free_end;
             printf("Cumulative Memory after OVA FFT Conv2D Complex allocations: %zu bytes\n", actual_cost);
-
+            cudaDeviceSynchronize();
+            
+            //Record FFT_OVA_CONV2D bytes here 
+            ctx.results["FFT_OVA_Conv2D"].memory_usage_bytes = actual_cost;
+            
             // copy data from h_padded_filter to d_padded_filter_OVA for OVA convolution, since we need the padded filter in float format for the conversion kernel before FFT processing in OVA
             cudaMemcpy(ctx.d_padded_filter_OVA, ctx.h_padded_filter.data(), ctx.block_h * ctx.block_w * sizeof(float), cudaMemcpyHostToDevice); 
 
@@ -739,25 +826,6 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cuda_operations::float2complex<<<convert_FilterFloat_To_Complex_blocksPerGrid, convert_FilterFloat_To_Complex_threadsPerBlock>>>(
                 ctx.block_w, ctx.block_h, ctx.d_padded_filter_OVA, ctx.d_filter_complex
             );
-
-            // std::cout << "Data in first row d_filter_complex: " << std::endl;
-            // cuComplex* sample_filter = new cuComplex[ctx.block_w];
-            // cudaMemcpy(sample_filter, ctx.d_filter_complex, ctx.block_w * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-            // for(int i = 0; i < ctx.block_w; i++){
-            //     std::cout << sample_filter[i].x << "i" << sample_filter[i].y << "j ";
-            // }
-            // std::cout << std::endl;
-            // delete[] sample_filter;
-
-            //check input complex data
-            // std::cout << "Data in first row of d_input_complex: " << std::endl;
-            // cuComplex* sample_input = new cuComplex[in_w];
-            // cudaMemcpy(sample_input, ctx.d_input_complex, in_w * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-            // for(int i = 0; i < in_w; i++){
-            //     std::cout << sample_input[i].x << "i" << sample_input[i].y << "j ";
-            // }
-            // std::cout << std::endl;
-            // delete[] sample_input;
 
             // Initialize output complex array to zeros
             cudaMemset(ctx.d_output_complex, 0, out_h * out_w * sizeof(cuComplex));
@@ -822,92 +890,119 @@ void convolution_test::test2DConvolution(
     const std::string& conv_output_path
 )
 {
+    // setup paths for writing to 
+    const std::string& full_path = mse_path; // TODO: this is a bit hacky, refactor later so that we pass a dedicated path for input images
+    std::filesystem::path base_path(full_path);
+
+    // Get directory path build/xxx/
+    std::filesystem::path dir = base_path.parent_path();
+    std::filesystem::path images_dir = dir / "results/images"; 
+   
+    std::string Direct_Conv_Filename = (images_dir / ("DirectConv2D_"+ std::to_string(test_input_height) + "x" + std::to_string(test_filter_height) + "x" + std::to_string(test_filter_width) + ".png")).string();
+    std::string FFT_Conv_Filename = (images_dir / ("FFTConv2D_" + std::to_string(test_input_height) + "x" + std::to_string(test_filter_height) + "x" + std::to_string(test_filter_width) + ".png")).string();
+    std::string OVA_Conv_Filename = (images_dir / ("FFT_OVA_Conv2D_" + std::to_string(test_input_height) + "x" + std::to_string(test_filter_height) + "x" + std::to_string(test_filter_width) + ".png")).string();
+
+    //@NOTE: print out test parameters for debugging and verification
+    std::cout << "Test Parameters:" << std::endl;
+    std::cout << "Input Dimension: " << (test_input_height*test_input_width) << " (HxW: " << test_input_height << "x" << test_input_width << ")" << std::endl;
+    std::cout << "Filter Dimension: " << (test_filter_height*test_filter_width) << " (HxW: " << test_filter_height << "x" << test_filter_width << ")" << std::endl;
+    std::cout << "Stride: " << test_stride << " Padding: " << test_padding << std::endl;
+    
+
     std::cout << "Running 2D Convolution Test..." << std::endl;
     //1. Initalise context with provided dimensions and data
     ConvContext ctx;
-    ctx.use_ova = true; 
     ctx.is_pooling = false;
-    //ctx.target_ova_size; default param is 32
+    //OVA must be large enough to fit f_area but smaller than input area (already a clause in bench mark if f_area >= input_area continue)
+    ctx.target_ova_size = std::min(((test_filter_height)), (test_input_width)); 
+    std::cout << "Target OVA size set to: " << ctx.target_ova_size << " (must be >= filter area and < input area)" << std::endl;
+    //1. Setup context for non_ova test
+    ctx.use_ova = false;
+    convolution_test::initaliseContext<false>(
+        ctx, test_input_height, test_input_width, 
+        test_filter_height, test_filter_width, test_stride, 
+        test_padding, image_test, test_image, test_filter,
+        ctx.target_ova_size, ctx.use_ova
+    );
 
-    std::cout << "Initializing context with OVA Conv set to " << (ctx.use_ova ? "TRUE" : "FALSE") << " and target block size of " << ctx.target_ova_size << std::endl;
-    if (ctx.is_pooling){
-        convolution_test::initaliseContext<true>(
-            ctx, test_input_height, test_input_width, 
-            test_filter_height, test_filter_width, test_stride, 
-            test_padding, image_test, test_image, test_filter,
-            ctx.target_ova_size, ctx.use_ova
-        );
-    
-        //2. Setup GPU memory and copy data to device
-        std::cout << "Setting up GPU memory and copying data to device..." << std::endl;
-        convolution_test::setupGPUMemory<true>(ctx);
-    }
-    else{
-        convolution_test::initaliseContext<false>(
-            ctx, test_input_height, test_input_width, 
-            test_filter_height, test_filter_width, test_stride, 
-            test_padding, image_test, test_image, test_filter,
-            ctx.target_ova_size, ctx.use_ova
-        );
-    
-        //2. Setup GPU memory and copy data to device
-        std::cout << "Setting up GPU memory and copying data to device..." << std::endl;
-        convolution_test::setupGPUMemory<false>(ctx);
-    }
-    //3. Use data from CTX and run each convolution variant, storing results in CTX.results
+    //2. Setup GPU memory (NON-OVA)
+    std::cout << "Setting up GPU memory and copying data to device for non-OVA test..." << std::endl;
+    convolution_test::setupGPUMemory<false>(ctx);
+
+    //3. Run Conv tests: FFT_Conv, Direct Conv
+    std::cout << "Running Direct Convolution..." << std::endl;
     convolution_test::run_direct(ctx);
     cudaDeviceSynchronize(); // ensure kernels are finished before starting next test for accurate timing and fair MSE comparison
+    std::cout << "Running Spectral Convolution..." << std::endl;
     convolution_test::run_FFTConv(ctx);
     cudaDeviceSynchronize();
     std::cout << "2D Convolution test executed." << std::endl;
-
-    if (!ctx.use_ova){
-        float direct_sum, spectral_sum= 0.0f;
-        for(int i = 0; i < ctx.out_w * ctx.out_h; ++i){
-            direct_sum += ctx.results["Custom_2DConv"].data[i];
-            spectral_sum += ctx.results["Spectral_Conv2D"].data[i];
-        }
-        std::cout << "Direct Conv2D Output Sum: " << direct_sum << std::endl;
-        std::cout << "Spectral Conv2D Output Sum: " << spectral_sum << std::endl;
-
-        //Reset Context 
-        convolution_test::resetFFTContext(ctx);
-
-        bool Results_Valid = utils::validateResults(ctx.results["Custom_2DConv"].data, ctx.results["Spectral_Conv2D"].data, 1e-3f);
-        if(Results_Valid){
-            std::cout << "Results are valid within the specified tolerance." << std::endl;
-        }
-        else{
-            std::cout << "Results are NOT valid within the specified tolerance!" << std::endl;
-        }
-        float mse_spectral = utils::MeasureError(ctx.results["Custom_2DConv"].data, ctx.results["Spectral_Conv2D"].data);
-        //4. Save results - MSE and runtime to CSV files, and output images for visual comparison if this is an image test
-        convolution_test::mse(ctx, image_test, mse_path, mse_spectral);
-        convolution_test::runtime(ctx, image_test, runtime_path, ctx.results["Custom_2DConv"].time_ms, ctx.results["Spectral_Conv2D"].time_ms);
-        convolution_test::freeContext(ctx); //MUST BE AT THE END
+    //4. Write to CSV and output images for non-OVA test
+    float mse_ = utils::MeasureError(ctx.results["Custom_2DConv"].data, ctx.results["Spectral_Conv2D"].data);
+    convolution_test::mse(ctx, image_test, mse_path, mse_);
+    convolution_test::runtime(ctx, image_test, runtime_path, ctx.results["Custom_2DConv"].time_ms, ctx.results["Spectral_Conv2D"].time_ms);
+    
+    //6. Save output images for visual comparison if this is an image test
+    if(image_test){
+        std::cout << "Saving output images for non-OVA test..." << std::endl;
+        utils::saveOutputImage(Direct_Conv_Filename, ctx.results["Custom_2DConv"].data, ctx.out_w, ctx.out_h);
+        utils::saveOutputImage(FFT_Conv_Filename, ctx.results["Spectral_Conv2D"].data, ctx.out_w, ctx.out_h);
     }
-    else{
-        float direct_sum, ova_sum= 0.0f;
-        for(int i = 0; i < ctx.out_w * ctx.out_h; ++i){
-            direct_sum += ctx.results["Custom_2DConv"].data[i];
-            ova_sum += ctx.results["FFT_OVA_Conv2D"].data[i];   
-        }
-        std::cout << "Direct Conv2D Output Sum: " << direct_sum << std::endl;
-        std::cout << "FFT-OVA Conv2D Output Sum: " << ova_sum << std::endl;
-        //Reset Context
-        convolution_test::resetFFTContext(ctx);
-        bool Results_Valid = utils::validateResults(ctx.results["Custom_2DConv"].data, ctx.results["FFT_OVA_Conv2D"].data, 1e-3f);
-        if(Results_Valid){
-            std::cout << "Results are valid within the specified tolerance." << std::endl;
-        }
-        else{
-            std::cout << "Results are NOT valid within the specified tolerance!" << std::endl;
-        }
-        float mse_ova = utils::MeasureError(ctx.results["Custom_2DConv"].data, ctx.results["FFT_OVA_Conv2D"].data);
-        //4. Save results - MSE and runtime to CSV files, and output images for visual comparison if this is an image test
-        convolution_test::mse(ctx, image_test, mse_path, mse_ova);
-        convolution_test::runtime(ctx, image_test, runtime_path, ctx.results["Custom_2DConv"].time_ms, ctx.results["FFT_OVA_Conv2D"].time_ms);
+
+
+    //5. Reset context and GPU memory for OVA test
+    std::vector<float> ground_truth_data = ctx.results["Custom_2DConv"].data;
+    float direct_time_ms = ctx.results["Custom_2DConv"].time_ms;
+    float spectral_time_ms = ctx.results["Spectral_Conv2D"].time_ms;
+    size_t direct_conv_bytes = ctx.results["Custom_2DConv"].memory_usage_bytes;
+    size_t FFT_Conv2D_bytes = ctx.results["Spectral_Conv2D"].memory_usage_bytes; 
+    convolution_test::freeContext(ctx); // free all GPU memory and reset context before next test
+
+    std::cout << "Starting FFT-OVA Convolution test...";
+    std::cout << "Target OVA size: " << ctx.target_ova_size << std::endl;
+    ctx.use_ova = true; // set flag for OVA test
+
+    //6. Setup context and GPU memory for OVA test, then run OVA convolution and write results to CSV and output image
+    convolution_test::initaliseContext<false>(
+        ctx, test_input_height, test_input_width, 
+        test_filter_height, test_filter_width, test_stride, 
+        test_padding, image_test, test_image, test_filter,
+        ctx.target_ova_size, ctx.use_ova
+    );
+    std::cout << "Setting up GPU memory and copying data to device for OVA test..." << std::endl;
+    convolution_test::setupGPUMemory<false>(ctx);
+    //early exit if OVA_block_dim exceeds input dim 
+    if ((ctx.block_w) >= (test_input_width) || (ctx.block_h) >= (test_input_height)){
+        std::cout << "Block dims: " << std::to_string(ctx.block_h) << "x" << std::to_string(ctx.block_w) << "Input Image Dims: " << std::to_string(test_input_height) << "x" << std::to_string(test_input_width) << ", skipping OVA test as it would not be valid..." << std::endl;
+        convolution_test::freeContext(ctx);
+        return;
     }
+    std::cout << "Running FFT-OVA Convolution..." << std::endl;
+    convolution_test::run_FFTConv(ctx); // TODO: replace with dedicated OVA Function, this may be confusing mb
+    cudaDeviceSynchronize();
+    std::cout << "OVA Convolution test executed." << std::endl;
+    float mse_ova = utils::MeasureError(ground_truth_data, ctx.results["FFT_OVA_Conv2D"].data);
+    convolution_test::mse(ctx, image_test, mse_path, mse_ova);
+    convolution_test::runtime(ctx, image_test, runtime_path, direct_time_ms, ctx.results["FFT_OVA_Conv2D"].time_ms);
+    
+    //7. Save output image for OVA test if this is an image test
+    if (image_test){
+        std::cout << "Saving output image for OVA test..." << std::endl;
+        utils::saveOutputImage(OVA_Conv_Filename, ctx.results["FFT_OVA_Conv2D"].data, ctx.out_w, ctx.out_h);
+    }
+
+    //8. Record the 3 algorithms memory usage
+    convolution_test::memory_usage(
+        ctx,
+        "Memory_Usage_File",
+        direct_conv_bytes, 
+        FFT_Conv2D_bytes,
+        ctx.results["FFT_OVA_Conv2D"].memory_usage_bytes
+    );
+
+    //9. Free all GPU memory and reset context
+    convolution_test::freeContext(ctx);
+    
 }
 
 void convolution_test::run_benchmarks(){
@@ -939,7 +1034,7 @@ void convolution_test::run_benchmarks(){
         {"256x256", 256},
         {"512x512", 512},
         {"1024x1024", 1024},
-        {"2048x2048", 2048},
+        // {"2048x2048", 2048},
     }; 
 
     //3. Loop through images in data/userdata/resized_images/ and run convolution tests with each filter, saving results to results/convolution/
@@ -970,7 +1065,7 @@ void convolution_test::run_benchmarks(){
             
             //loop through filter dims and run tests
             for (const auto& filter_dim : filter_test_dims) {
-                if (filter_dim.size > img_w || filter_dim.size > img_h) {
+                if (filter_dim.size >= img_w || filter_dim.size >= img_h) {
                     std::cout << "Skipping filter size " << filter_dim.size << "x" << filter_dim.size 
                               << " for image " << image_name << " due to larger dimensions than the image." << std::endl;
                     continue;
@@ -999,9 +1094,12 @@ void convolution_test::run_benchmarks(){
                         CONVOLUTION:
                         CONV_METHOD_ImageName_FilterSize_ **.png
                     */
-                    results_path + "/results/benchmarks/" + image_name + "_filter_" + filter_dim.name,
-                    results_path + "/results/benchmarks/" + image_name + "_filter_" + filter_dim.name,
-                    results_path + "/results/images/" + image_name + "_filter_" + filter_dim.name
+                    // Runtime file : Runtime_ImageName_FilterDim
+                    "Runtime_",
+                    // MSE file : ImageName_InputDim_FilterDim
+                    "MSE_",
+                    // Conv output image : Conv_ImageName_FilterDim
+                    "ConvOutput_" + image_name  +"_" + std::to_string(filter_dim.size)+"x"+std::to_string(filter_dim.size)
                 );
             }
         }
@@ -1116,7 +1214,7 @@ void convolution_test::convolve(char* argv[]){
     // Alex net convs are 32x32,11x11,5x5,3x3
     TestMode mode = parseMode(argv[2]);
     std::vector<int> input_dims = {512};
-    std::vector<int> filter_dims = {3};
+    std::vector<int> filter_dims = {64};
     int num_runs = 1;
     int stride = 1;
     int padding = 0;
