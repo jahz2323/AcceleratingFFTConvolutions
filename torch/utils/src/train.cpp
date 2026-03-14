@@ -64,39 +64,67 @@ void train::TestCustomOperator(){
     {
         std::cout << "Testing custom autograd function for 2D convolution..." << std::endl;
         // test grad function 
-        torch::Tensor input = torch::randn({1, 1, 4, 4}, torch::kCUDA); // dosent require grad if its just one layer and its input
+        torch::Tensor input = torch::randn({1, 1, 4, 4}, torch::kCUDA).requires_grad_(true); 
         torch::Tensor weight = torch::randn({1, 1, 2, 2}, torch::kCUDA).requires_grad_(true); // we want to update weights wrt loss, so requires grad true
         //torch::Tensor bias = torch::randn({1}, torch::kCUDA).requires_grad_(true);
-        int8_t stride = 1;
+        int8_t stride = 2;
         int8_t padding = 0;
         auto y = myConv2DFunction::apply(input, weight, stride, padding);
 
-        auto z = y.mean(); 
+        // create true output for loss calculation
+        auto true_output = torch::randn_like(y);
+        std::cout << "True output for loss calculation: " << true_output << std::endl;
+        auto z = torch::nn::functional::mse_loss(y, true_output);
+
         std::cout << "Output of custom autograd convolution function: " << y << std::endl;
         std::cout << "Mean of output (loss): " << z.item<float>() << std::endl;
         z.backward();
 
         std::cout << "Input gradient: " << input.grad() << std::endl;
         std::cout << "Weight gradient: " << weight.grad() << std::endl;
+
+        //update weights with simple SGD step
+        float learning_rate = 0.01;
+        weight.data().sub_(learning_rate * weight.grad());
+        std::cout << "Updated weights after one SGD step: " << weight << std::endl;
+
+        // TESTING TRAINING
+        struct SimpleCNN : torch::nn::Module {
+            SimpleCNN() {
+                w1 = register_parameter("w1", torch::randn({8, 1, 5, 5}, torch::kCUDA).requires_grad_(true)); // OutputChannels,InputChannels,Kernelw,Kernelh
+                w2 = register_parameter("w2", torch::randn({5, 8, 2, 2}, torch::kCUDA).requires_grad_(true)); // second conv layer weights for testing multiple layers
+            }
+            torch::Tensor forward(torch::Tensor x) {
+                x = myConv2DFunction::apply(x, w1, 1, 0); // valid conv with stride 1 -> input dims 16x16, filter 5x5 -> output dims 8x12x12
+                x = torch::relu(x);
+                x = myConv2DFunction::apply(x, w2, 1, 0); // second conv layer with 32 filters of size 2x2, input dims 8x12x12 -> output dims 32x11x11
+                x = torch::relu(x);
+                return x;
+            }
+            torch::Tensor w1, w2;
+        };
+        SimpleCNN model;
+        model.to(torch::kCUDA);
+        torch::optim::SGD optimizer(model.parameters(), torch::optim::SGDOptions(0.01));
+        torch::Tensor input_data = torch::randn({1, 1, 16, 16}, torch::kCUDA); // batch=32, channels=1, width=4, height=4
+        auto output_for_shape = model.forward(input_data);
+        std::cout << "Output shape from model forward pass: " << output_for_shape.sizes() << std::endl;
+        auto target = torch::randn_like(output_for_shape);
+
+        for (int epoch = 0; epoch < 10; ++epoch) {
+            optimizer.zero_grad();
+            auto output = model.forward(input_data);
+            auto loss = torch::nn::functional::mse_loss(output, target);
+            std::cout << "Epoch " << epoch << ", Loss: " << loss.item<float>() << std::endl;
+            loss.backward();
+            optimizer.step();
+            optimizer.zero_grad();
+        }
+        
+        // After training, check if weights have been updated
+        std::cout << "Final weights after training: W1: " << model.w1 << "W2:" << model.w2 << std::endl;
     }
-    // test_custom autograd function
-    // int input_features = 10;
-    // int output_features = 5;
-    // int batch_size = 4;
-
-    // torch::Tensor input = torch::randn({batch_size, input_features}, torch::kCUDA).requires_grad_(true);
-    // torch::Tensor weight = torch::randn({output_features, input_features}, torch::kCUDA).requires_grad_(true);
-    // torch::Tensor bias = torch::randn({output_features}, torch::kCUDA).requires_grad_(true);
-
-    // auto y = MyLinearFunction::apply(input, weight, bias);
     
-    // // calculate loss 
-    // auto loss = y.mean();
-    // loss.backward();
-
-    // std::cout << "Input gradient: " << input.grad() << std::endl;
-    // std::cout << "Weight gradient: " << weight.grad() << std::endl;
-    // std::cout << "Bias gradient: " << bias.grad() << std::endl;
 }
 
 

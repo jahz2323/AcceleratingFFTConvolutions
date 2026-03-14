@@ -27,25 +27,75 @@ class myConv2DFunction : public torch::autograd::Function<myConv2DFunction>{
         static_cast<void>(saved[2]); // output, not needed for backward
         int8_t stride = saved[3].item<int8_t>();
         int8_t padding = saved[4].item<int8_t>();
-        auto op = torch::Dispatcher::singleton()
-                .findSchemaOrThrow("my_ops::custom_2DConv", "")
-                .typed<torch::Tensor (torch::Tensor, torch::Tensor, int8_t, int8_t)>();
+        // auto op = torch::Dispatcher::singleton()
+        //         .findSchemaOrThrow("my_ops::custom_2DConv", "")
+        //         .typed<torch::Tensor (torch::Tensor, torch::Tensor, int8_t, int8_t)>();
         // compute gradients for input and filters
         //create a update tensor for filters and input with the same shape as filters and input respectively, to store the gradients
- 
+        // Conceptual: grad_weights = conv2d(input, grad_output)
+        // You essentially treat the input channels as the 'batch' 
+        // to get the gradients for each filter.
+
         //1. Gradients wrt weights  DL/DW
 
         //DYpred/DW = X, DL/DYpred = grad_output, so DL/DW = X^T * grad_output
-        auto grad_filters = input.sum({0,2,3}, /*keepdim */ true) * grad_output;
+        // 1. Weight Grad: Input convolved with Grad_Output
+        // 2. Input Grad: Grad_Output convolved with flipped filters (and appropriate padding) WITH STRIDE taken into account
+        // http://deeplearning.cs.cmu.edu/S21/document/slides/Lec12.CNN4.pdf
+        /**
+            Plan:
+            Iterate through output channels
+            Interate through input channels
+            iterate through output grid 
+            iterate through filter grid
+        */
+        auto grad_input = torch::zeros_like(input); 
+        auto grad_filters = torch::zeros_like(filters);
+        int64_t batch_size = input.size(0);
 
-        //2. Gradients wrt input DL/DX
-        //DYpred/DX = W, DL/DYpred = grad_output, so DL/DX = grad_output * W^T
-        auto grad_input = filters.sum({0,2,3}, /*keepdim */ true) * grad_output;
+        //call op 
+        auto op = torch::Dispatcher::singleton()
+                .findSchemaOrThrow("my_ops::custom_2DConvBackward", "")
+                .typed<std::tuple<torch::Tensor, torch::Tensor>(torch::Tensor, torch::Tensor, torch::Tensor, int8_t, int8_t)>();
+        auto [grad_input_op, grad_filters_op] = op.call(grad_output, input, filters, stride, padding);
+        // for (int64_t batch =0; batch < batch_size; ++batch){
+        //     for (int j =0; j < filters.size(0); ++j){ // loop over output channels
+        //         for (int i =0; i < filters.size(1); ++i){ // loop over input channels
 
+        //             //Loop over output Grid 
+        //             for ( int x = 0; x < grad_output.size(2); ++x){
+        //                 for (int y = 0; y < grad_output.size(3); ++y){
 
-        // grad_input = grad_input.expand_as(input);
-        // grad_filters = grad_filters.expand_as(filters);
-        return {grad_input, grad_filters, torch::Tensor()};
+        //                     // top left corner of the filter on the input
+        //                     int x_start = x * stride - padding;
+        //                     int y_start = y * stride - padding;
+
+        //                     //upstream gradient 
+        //                     float dz = grad_output[batch][j][x][y].item<float>();
+
+        //                     //Loop over kernel 
+        //                     for (int kx= 0; kx < filters.size(2); ++kx){
+        //                         for (int ky = 0; ky < filters.size(3); ++ky){
+        //                             int x_in = x_start + kx;
+        //                             int y_in = y_start + ky;
+
+        //                             // Check for valid input coordinates (handle padding)
+        //                             if (x_in >= 0 && x_in < input.size(2) && y_in >= 0 && y_in < input.size(3)){
+        //                                 // Update gradients
+        //                                 grad_filters[j][i][kx][ky] += input[batch][i][x_in][y_in].item<float>() * dz; // DL/DW += X * DL/DYpred
+        //                                 grad_input[batch][i][x_in][y_in] += filters[j][i][kx][ky].item<float>() * dz; // DL/DX += W * DL/DYpred
+        //                             }
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        // // grad_input = grad_input.expand_as(input);
+        // // grad_filters = grad_filters.expand_as(filters);
+        return {grad_input, grad_filters, torch::Tensor(), torch::Tensor()};
     }
 };
 
