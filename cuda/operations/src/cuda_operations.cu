@@ -410,6 +410,7 @@ __global__ void cuda_operations::_1D_IFFT(int width, int height, cuComplex* inpu
     }
 }
 
+
 __global__ void cuda_operations::overlap_add_kernel(
     const cuComplex* convolved_block,
     cuComplex* output,
@@ -418,18 +419,18 @@ __global__ void cuda_operations::overlap_add_kernel(
     int out_w, int out_h
 ){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (idx >= block_w || idy >= block_h) return;
+    if (idx >= block_w || row >= block_h) return;
 
-    int local_idx = idy * block_w + idx;
+    int local_idx = row * block_w + idx;
     int output_x = start_x + idx;
-    int output_y = start_y + idy;
+    int output_y = start_y + row;
 
     if(output_x < out_w && output_y < out_h){
         int output_idx = output_y * out_w + output_x;
-        //float scale =  (block_w * block_h); // scale factor to prevent overflow, can be tuned based on expected value range of convolved_block
-        float scale = 1.0f; // no scaling for now, can be adjusted based on empirical testing
+        float scale = 1 /  (block_w * block_h); // scale factor to prevent overflow, can be tuned based on expected value range of convolved_block
+        //float scale = 1.0f; // no scaling for now, can be adjusted based on empirical testing
         cuComplex val = convolved_block[local_idx];
         // atomic add to handle overlapping regions
         atomicAdd(&output[output_idx].x, val.x * scale);
@@ -511,27 +512,16 @@ void cuda_operations::FFT_OVA_Conv(
     //check if d_fitler_complex has value 
     std::vector<cuComplex> h_filter_complex(block_w * block_h);
     cudaMemcpy(h_filter_complex.data(), d_filter_complex, block_w * block_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    float filter_sum =0 ;
-    for(int i =0; i< block_w * block_h; i++){
-        filter_sum += h_filter_complex[i].x; // sum of real parts as a simple check
-    }
-    std::cout << "Filter sum: " << filter_sum << std::endl;
-
+    utils::checkcuComplexArray(h_filter_complex.data(), block_w, block_h, "OVA_FILTER_PRIOR_FFT");
+ 
     // Compute FFT of filter once and reuse for all blocks
     cuda_operations::Forward2DFFT(block_w, block_h, d_filter_complex, d_output_complex); // in-place FFT of filter
     cudaDeviceSynchronize();
 
     // DEBUG: copy back filter FFT to host and print sum of real parts as a simple check
-    
     cudaMemcpy(h_filter_complex.data(), d_filter_complex, block_w * block_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    filter_sum =0 ;
-    for(int i =0; i< block_w * block_h; i++){
-        filter_sum += h_filter_complex[i].x; // sum of real parts as a simple check
-    }
-    std::cout << "Filter FFT sum (real parts): " << filter_sum << std::endl;
-    // cuComplex filter_check;
-    // cudaMemcpy(&filter_check, d_filter_complex, sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    
+    utils::checkcuComplexArray(h_filter_complex.data(), block_w, block_h, "OVA_FILTER_AFTER_FFT");
+ 
      // ENTIRE SNIPPET CAN BE MANAGED IN SETUP GPU
     // create a scratch buffer of d_output_complex size 
     // cuComplex* d_scratch;
@@ -540,12 +530,11 @@ void cuda_operations::FFT_OVA_Conv(
 
 
     int num_elements = block_w * block_h;
-    int threads_per_block = 128;
+    int threads_per_block = 64;
     int num_blocks = (num_elements + threads_per_block - 1) / threads_per_block;
     
     //Need a workspace and scratch space per stream 
-    // std::cout << "DEBUG: Filter FFT index 0: " << filter_check.x << " + " << filter_check.y << "i" << std::endl;
-    for (int block_idx = 0; block_idx < total_blocks; block_idx++){
+    for (int block_idx = 0; block_idx < total_blocks; ++block_idx){
         int stream_idx = block_idx % num_streams;
 
         int block_x = block_idx % num_blocks_w;

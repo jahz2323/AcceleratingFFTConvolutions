@@ -111,7 +111,14 @@ void utils::writeCSV(
 void utils::checkcuComplexArray(cuComplex* data, int width, int height, const std::string& array_name){
     std::vector<cuComplex> host_data(width * height);
     cudaMemcpy(host_data.data(), data, width * height * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    std::cout << "Contents of " << array_name << " :" << std::endl;
+    std::cout << "Contents of " << array_name << " :";
+    for (int i =0; i < height; ++i){
+        for (int j =0; j < width; ++j){
+            cuComplex curr_idx = data[i * width + j]; 
+            std::cout << "|" << "x: " << curr_idx.x << "y: " << curr_idx.y << "";
+        }
+        std::cout<<std::endl;
+    }
     
     // check dims 
     std::cout << "Dimensions: " << height << " x " << width << std::endl; 
