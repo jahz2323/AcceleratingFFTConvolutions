@@ -301,6 +301,13 @@ void convolution_test::run_FFTConv(ConvContext& ctx)
 {       
    
     std::cout << "-------- Running Custom FFT Convolution Kernel --------" << std::endl;
+
+    // // assertion check if power of two for ctx.block_w, ctx.block_h, f_h, f_w power of two 
+    // assert(utils::isPowerOfTwo(ctx.block_h));
+    // assert(utils::isPowerOfTwo(ctx.block_w));
+    // assert(utils::isPowerOfTwo(ctx.f_w));
+    // assert(utils::isPowerOfTwo(ctx.f_h));
+
     cudaEvent_t start, stop;
     cudaEventCreate(&start); cudaEventCreate(&stop);
     cudaEventRecord(start);
@@ -312,8 +319,17 @@ void convolution_test::run_FFTConv(ConvContext& ctx)
         cudaMemcpy(ctx.d_input_complex, ctx.d_saved_input_complex, ctx.in_h * ctx.in_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
         cudaMemcpy(ctx.d_filter_complex, ctx.d_saved_filter_complex, ctx.block_h * ctx.block_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
         //2. Clear output 
-        cudaMemset(ctx.d_output_complex, 0, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
+        cudaMemset(ctx.d_output_complex, 0, ctx.out_w * ctx.out_h * sizeof(cuComplex));
         
+        // //DEBUG
+        // float check_sum = 0;
+        // std::vector<cuComplex> h_check(ctx.out_w * ctx.out_h);
+        // cudaMemcpy(h_check.data(), ctx.d_output_complex, 
+        //         ctx.out_w * ctx.out_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+        // for (auto& v : h_check) check_sum += fabsf(v.x) + fabsf(v.y);
+        // std::cout << "Output zeroed: sum=" << check_sum 
+        //         << " size=" << ctx.out_w * ctx.out_h << std::endl;
+
         std::cout << "Running FFT-OVA Convolution with target block size of " << ctx.target_ova_size << std::endl;
         // Call OVA Conv 
         cuda_operations::FFT_OVA_Conv(
@@ -344,10 +360,18 @@ void convolution_test::run_FFTConv(ConvContext& ctx)
         cudaDeviceSynchronize();
         nvtxRangePop();
         
+        // cudaMemcpy(h_check.data(), ctx.d_output_complex,
+        //    ctx.out_w * ctx.out_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+        // check_sum = 0;
+        // for (auto& v : h_check) check_sum += fabsf(v.x) + fabsf(v.y);
+        // std::cout << "Output after OVA: sum=" << check_sum << std::endl;
+        // std::cout << "Output[0..4]: ";
+        // for (int i = 0; i < 5; ++i) std::cout << h_check[i].x << " ";
+        // std::cout << std::endl;
+        // std::cout << "Output[3] specifically: " << h_check[3].x << std::endl;
+                
         //Store in ctx.results["Spectral_Conv2D"].data 
         nvtxRangePushA("Copy_Spectral_Output_and_Convert");
-        std::vector<cuComplex> fft_conv_output_complex(ctx.fft_w * ctx.fft_h);
-        cudaMemcpy(fft_conv_output_complex.data(), ctx.d_output_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
         dim3 convert_threadsPerBlock(32, 32);
         dim3 convert_blocksPerGrid((ctx.out_w + convert_threadsPerBlock.x - 1) / convert_threadsPerBlock.x,
                                 (ctx.out_h + convert_threadsPerBlock.y - 1) / convert_threadsPerBlock.y);
@@ -398,8 +422,8 @@ void convolution_test::run_FFTConv(ConvContext& ctx)
         
         //Store in ctx.results["Spectral_Conv2D"].data 
         nvtxRangePushA("Copy_Spectral_Output_and_Convert");
-        std::vector<cuComplex> fft_conv_output_complex(ctx.fft_w * ctx.fft_h);
-        cudaMemcpy(fft_conv_output_complex.data(), ctx.d_output_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
+        //std::vector<cuComplex> fft_conv_output_complex(ctx.fft_w * ctx.fft_h);
+        //cudaMemcpy(fft_conv_output_complex.data(), ctx.d_output_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToHost);
         dim3 convert_threadsPerBlock(32, 32);
         dim3 convert_blocksPerGrid((ctx.fft_w + convert_threadsPerBlock.x - 1) / convert_threadsPerBlock.x,
                                 (ctx.fft_h + convert_threadsPerBlock.y - 1) / convert_threadsPerBlock.y);
@@ -478,7 +502,7 @@ void convolution_test::resetFFTContext(ConvContext& ctx){
     // Utility function to reset complex buffers to saved state for fair runtime comparisons between spectral methods
     cudaMemcpy(ctx.d_input_complex, ctx.d_saved_input_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
     cudaMemcpy(ctx.d_filter_complex, ctx.d_saved_filter_complex, ctx.fft_w * ctx.fft_h * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-    cudaMemset(ctx.d_output_complex, 0, ctx.fft_w * ctx.fft_h * sizeof(cuComplex));
+    cudaMemset(ctx.d_output_complex, 0, ctx.out_w * ctx.out_h * sizeof(cuComplex));
 }
 
 
@@ -577,9 +601,9 @@ void convolution_test::initaliseContext(
             ctx.segment_h = target_block_size; 
             ctx.segment_w = target_block_size;
 
-            // Kernel to be padded to K+K-1
-            int required_block_h = ctx.segment_h + ctx.segment_h - 1;
-            int required_block_w = ctx.segment_w + ctx.segment_w - 1;
+            // Kernel to be padded to segment+filter-1
+            int required_block_h = ctx.segment_h + ctx.f_h - 1;
+            int required_block_w = ctx.segment_w + ctx.f_w - 1;
 
             // Set FFT dims to next power of two of required block dims for efficient FFT processing
             ctx.block_h = utils::nextPowerOfTwo(required_block_h);
@@ -606,15 +630,17 @@ void convolution_test::initaliseContext(
 
             cv::Mat test_filter_float;
             test_filter.convertTo(test_filter_float, CV_32F);
-            int cx = ctx.block_w / 2;
-            int cy = ctx.block_h / 2;
+            // int cx = ctx.block_w / 2;
+            // int cy = ctx.block_h / 2;
             // int filter_cx = f_w / 2;
             // int filter_cy = f_h / 2;
             for (int i = 0; i < f_h; ++i) {
                 for (int j = 0; j < f_w; ++j) {
-                    int x = (i - cy + ctx.block_h) % ctx.block_h;
-                    int y = (j - cx + ctx.block_w) % ctx.block_w;
-                    ctx.h_padded_filter[x * ctx.block_w + y] = test_filter_float.at<float>(i, j);
+                    // int x = (i - cy + ctx.block_h) % ctx.block_h;
+                    // int y = (j - cx + ctx.block_w) % ctx.block_w;
+                    ctx.h_padded_filter[i * ctx.block_w + j] = test_filter_float.at<float>(i, j);
+                    // Fixing OVA_Conv - Definitive fix flip the filter + <true> complex conj  
+                    //ctx.h_padded_filter[i * ctx.block_w + j] = test_filter_float.at<float>(f_h - 1 - i, f_w - 1 - j);
                 }
             }
 
@@ -823,6 +849,7 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             
             // copy data from h_padded_filter to d_padded_filter_OVA for OVA convolution, since we need the padded filter in float format for the conversion kernel before FFT processing in OVA
             cudaMemcpy(ctx.d_padded_filter_OVA, ctx.h_padded_filter.data(), ctx.block_h * ctx.block_w * sizeof(float), cudaMemcpyHostToDevice); 
+            cudaMemcpy(ctx.d_saved_input_float, ctx.h_input.data(), ctx.in_w * ctx.in_h * sizeof(float), cudaMemcpyHostToDevice);
 
             //D Map device_input, and filter to Complex 
             dim3 convert_InputFloat_To_Complex_threadsPerBlock(16, 16);
@@ -847,9 +874,6 @@ void convolution_test::setupGPUMemory(ConvContext& ctx){
             cudaMalloc((void**)&ctx.d_saved_filter_complex,  ctx.block_w * ctx.block_h * sizeof(cuComplex));
             cudaMemcpy(ctx.d_saved_input_complex, ctx.d_input_complex, in_h * in_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
             cudaMemcpy(ctx.d_saved_filter_complex, ctx.d_filter_complex, ctx.block_h * ctx.block_w * sizeof(cuComplex), cudaMemcpyDeviceToDevice);
-            cudaMemcpy(ctx.d_saved_input_float, ctx.d_input_float, in_h * in_w * sizeof(float), cudaMemcpyDeviceToDevice);
-            cudaMemcpy(ctx.d_saved_filter_float, ctx.d_filter_float, ctx.block_h * ctx.block_w * sizeof(float), cudaMemcpyDeviceToDevice);
-            
         }
 
         //Synchronize to ensure all memory operations are complete before kernels run
@@ -947,6 +971,8 @@ void convolution_test::test2DConvolution(
     convolution_test::run_direct(ctx);
     cudaDeviceSynchronize(); // ensure kernels are finished before starting next test for accurate timing and fair MSE comparison
     std::cout << "Running Spectral Convolution..." << std::endl;
+
+    
     convolution_test::run_FFTConv(ctx);
     cudaDeviceSynchronize();
     std::cout << "2D Convolution test executed." << std::endl;
@@ -954,6 +980,7 @@ void convolution_test::test2DConvolution(
     //4. Write to CSV and output images for non-OVA test
     std::vector<float> conv2d_data = ctx.results["Custom_2DConv"].data;
     std::vector<float> fft_conv2d_data = ctx.results["Spectral_Conv2D"].data;
+    
     float mse_ = utils::MeasureError(ctx.results["Custom_2DConv"].data, ctx.results["Spectral_Conv2D"].data);
    
     // convolution_test::mse(ctx, image_test, mse_path, mse_);
@@ -962,10 +989,10 @@ void convolution_test::test2DConvolution(
     //5. Save output images for visual comparison if this is an image test
     if(image_test){
         std::cout << "Saving output images for non-OVA test..." << std::endl;
-        utils::saveOutputImage(Direct_Conv_Filename, ctx.results["Custom_2DConv"].data, ctx.out_w, ctx.out_h);
-        utils::saveOutputImage(FFT_Conv_Filename, ctx.results["Spectral_Conv2D"].data, ctx.out_w, ctx.out_h);
+        //utils::saveOutputImage(Direct_Conv_Filename, ctx.results["Custom_2DConv"].data, ctx.out_w, ctx.out_h);
+        //utils::saveOutputImage(FFT_Conv_Filename, ctx.results["Spectral_Conv2D"].data, ctx.out_w, ctx.out_h);
     }
-
+    convolution_test::freeContext(ctx);
 
     //6. Initalise ova context, GPU memory and run ova algorithm
     std::cout << "Running ova tests " << std::endl; 
@@ -984,11 +1011,22 @@ void convolution_test::test2DConvolution(
     std::cout << "Running FFT_OVA_CONV2D ..." << std::endl;
     convolution_test::run_FFTConv(ctx);
     cudaDeviceSynchronize();
-
+    std::cout << "conv2d_data size: " << conv2d_data.size() << std::endl;
+    std::cout << "ova_data size: " << ctx.results["FFT_OVA_Conv2D"].data.size() << std::endl;
+    std::cout << "Direct[0..4]: ";
+    for(int i=0;i<5;i++) std::cout << conv2d_data[i] << " ";
+    std::cout << std::endl;
+    std::cout << "OVA[0..4]: ";
+    for(int i=0;i<5;i++) std::cout << ctx.results["FFT_OVA_Conv2D"].data[i] << " ";
+    std::cout << std::endl;
     float mse_ova = utils::MeasureError(conv2d_data, ctx.results["FFT_OVA_Conv2D"].data);
     // convolution_test::mse(ctx, image_test, mse_path, mse_ova);
     // convolution_test::runtime(ctx, image_test, runtime_path, direct_time_ms, ctx.results["FFT_OVA_Conv2D"].time_ms);
     
+    //DEBUG: 
+  std::cout << "Direct[31*out_w + 31]: " << conv2d_data[31 * ctx.out_w + 31] << std::endl;
+    std::cout << "OVA[0]:                " << ctx.results["FFT_OVA_Conv2D"].data[0] << std::endl;
+
     //7. Print out MSE - tolerance of 0.1e-2
     float tolerance = 1e-2;
     std::cout << "Checking mse of fft_conv2d and fft_ova_conv2d" << std::endl; 
@@ -1005,7 +1043,7 @@ void convolution_test::test2DConvolution(
 
     //8. Save output image for OVA test if this is an image test
     if (image_test){
-        std::cout << "Saving output image for OVA test..." << std::endl;
+        //std::cout << "Saving output image for OVA test..." << std::endl;
         utils::saveOutputImage(OVA_Conv_Filename, ctx.results["FFT_OVA_Conv2D"].data, ctx.out_w, ctx.out_h);
     }
 
@@ -1023,33 +1061,37 @@ void convolution_test::test2DConvolution(
     
 }
 
-void convolution_test::run_benchmarks(){
-    //root /WebCNN/c++/cuda/build
-    //data /WebCNN/data/userdata/
-    //resized image /WebCNN/data/userdata/resized_images/
-    //measurements /WebCNN/c++/cuda/build/results/convolution/
-    std::filesystem::path project_root = std::filesystem::current_path().parent_path().parent_path().parent_path();
+/**
+                                Results Structure 
+                                RUNTIME: 
+                                Runtime_ImageName_FilterSize_ **.csv
+                                MSE:
+                                MSE_ImageName_FilterSize_ ** .csv
+                                CONVOLUTION:
+                                CONV_METHOD_ImageName_FilterSize_ **.png
+*/
 
+void convolution_test::run_benchmarks(){
+    std::filesystem::path project_root = std::filesystem::current_path().parent_path().parent_path().parent_path();
     //1. Define image list dims, 
     std::vector<convolution_test::ConvConfig> image_test_dims = {
-        {"32x32", 32},
-        // {"64x64", 64},
-        // {"128x128", 128},
-        // {"256x256", 256},
-        // {"512x512", 512},
-        // {"1024x1024", 1024},
-        // {"2048x2048", 2048},
+        // {"_64", 64},
+        // {"_128", 128},
+        // {"_256", 256},
+        {"_512", 512},
+        // {"_1024", 1024},
+        // {"_2048", 2048},
     };
 
     //2. Define filter dims
     std::vector<convolution_test::ConvConfig> filter_test_dims = {
-        {"3x3", 3},
+        // {"3x3", 3},
         // {"5x5", 5},
         // {"11x11", 11},
         // {"16x16", 16},
-        // {"32x32", 32},
+        {"32x32", 32},
         // {"64x64", 64},
-        //{"128x128", 128},
+        // {"128x128", 128},
         // {"256x256", 256},
         // {"512x512", 512},
         // {"1024x1024", 1024},
@@ -1059,67 +1101,63 @@ void convolution_test::run_benchmarks(){
     //3. Loop through images in data/userdata/resized_images/ and run convolution tests with each filter, saving results to results/convolution/
     std::string data_path = project_root.string() + "/data/userdata/resized_images/";
     std::string results_path = std::filesystem::current_path().string(); // results will be saved to /WebCNN/c++/cuda/build/results/convolution/
-
     std::cout << "Starting convolution benchmarks on images in: " << data_path << std::endl;
     std::cout << "Results will be saved to: " << results_path + "/results/benchmarks/" << std::endl;
-    using recursize_directory_iterator = std::filesystem::recursive_directory_iterator;
+    using recursize_directory_iterator = std::filesystem::recursive_directory_iterator; 
     for (const auto& entry : recursize_directory_iterator(data_path)) {
         if (entry.is_regular_file()) {
+            std::string filename = entry.path().filename().string(); 
             std::string image_path = entry.path().string();
             std::string image_name = entry.path().stem().string();
-            //Read in image 
-            std::cout << "Running convolution tests for image: " << image_name << std::endl;
-            cv::Mat image = cv::imread(image_path, cv::IMREAD_GRAYSCALE);
+   
+
+            for (const auto& img_conf : image_test_dims){
+                if(image_name.find(img_conf.name) != std::string::npos){
             
-            if (image.empty()) {
-                std::cerr << "Error: Could not load image at " << image_path << std::endl;
-                continue;
-            }
-            
-            //Properties of the current image 
-            int img_w = image.cols;
-            int img_h = image.rows;
-            std::string dim_str = std::to_string(img_w) + "x" + std::to_string(img_h);
-            std::cout << "\n--- Processing Image: " << image_name << " (" << dim_str << ") ---" << std::endl;
-            
-            //loop through filter dims and run tests
-            for (const auto& filter_dim : filter_test_dims) {
-                if (filter_dim.size >= img_w || filter_dim.size >= img_h) {
-                    std::cout << "Skipping filter size " << filter_dim.size << "x" << filter_dim.size 
-                              << " for image " << image_name << " due to larger dimensions than the image." << std::endl;
-                    continue;
+                    //Read in image 
+                    std::cout << "Running convolution tests for image: " << image_name << std::endl;
+                    cv::Mat image = cv::imread(image_path, cv::IMREAD_GRAYSCALE);
+                    
+                    if (image.empty()) {
+                        std::cerr << "Error: Could not load image at " << image_path << std::endl;
+                        continue;
+                    }
+                    
+                    //Properties of the current image 
+                    int img_w = image.cols;
+                    int img_h = image.rows;
+                    std::string dim_str = std::to_string(img_w) + "x" + std::to_string(img_h);
+                    std::cout << "\n--- Processing Image: " << image_name << " (" << dim_str << ") ---" << std::endl;
+                    
+                    //loop through filter dims and run tests
+                    for (const auto& filter_dim : filter_test_dims) {
+                        if (filter_dim.size >= img_w || filter_dim.size >= img_h) {
+                            std::cout << "Skipping filter size " << filter_dim.size << "x" << filter_dim.size 
+                                    << " for image " << image_name << " due to larger dimensions than the image." << std::endl;
+                            continue;
+                        }
+                        std::cout << "Testing with filter size: " << filter_dim.size << "x" << filter_dim.size << std::endl;
+                        
+                        // Create a simple averaging filter for testing
+                        cv::Mat filter = cv::Mat::ones(filter_dim.size, filter_dim.size, CV_32F) / (filter_dim.size * filter_dim.size);
+                    
+                        //Run Convolution test
+                        convolution_test::test2DConvolution<true>(
+                            image.rows,
+                            image.cols,
+                            filter.rows,
+                            filter.cols,
+                            1, // stride
+                            0, // padding
+                            image,
+                            filter,
+                            "Runtime_",
+                            "MSE_",
+                            "ConvOutput_" + image_name  +"_" + std::to_string(filter_dim.size)+"x"+std::to_string(filter_dim.size)
+                        );
+                    }
+                    break; // move to next image
                 }
-                std::cout << "Testing with filter size: " << filter_dim.size << "x" << filter_dim.size << std::endl;
-                
-                // Create a simple averaging filter for testing
-                cv::Mat filter = cv::Mat::ones(filter_dim.size, filter_dim.size, CV_32F) / (filter_dim.size * filter_dim.size);
-                
-                //Run Convolution test
-                convolution_test::test2DConvolution<true>(
-                    image.rows,
-                    image.cols,
-                    filter.rows,
-                    filter.cols,
-                    1, // stride
-                    0, // padding
-                    image,
-                    filter,
-                    /**
-                        Results Structure 
-                        RUNTIME: 
-                        Runtime_ImageName_FilterSize_ **.csv
-                        MSE:
-                        MSE_ImageName_FilterSize_ ** .csv
-                        CONVOLUTION:
-                        CONV_METHOD_ImageName_FilterSize_ **.png
-                    */
-                    // Runtime file : Runtime_ImageName_FilterDim
-                    "Runtime_",
-                    // MSE file : ImageName_InputDim_FilterDim
-                    "MSE_",
-                    // Conv output image : Conv_ImageName_FilterDim
-                    "ConvOutput_" + image_name  +"_" + std::to_string(filter_dim.size)+"x"+std::to_string(filter_dim.size)
-                );
             }
         }
     }

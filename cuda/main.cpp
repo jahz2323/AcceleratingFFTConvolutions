@@ -2,7 +2,16 @@
 #include <string>
 #include "convolution_test.cuh"
 
+#include <limits> // check IEEE 754 Complicant 
 
+void ieee_standard_check() {
+    if (std::numeric_limits<float>::is_iec559) {
+        std::cout << "Float is IEEE 754 compliant." << std::endl;
+    }
+    if (std::numeric_limits<double>::is_iec559) {
+        std::cout << "Double is IEEE 754 compliant." << std::endl;
+    }
+}
 /**
     @brief Entry for CUDA operation testing 
     1. Run Convolution tests
@@ -10,6 +19,7 @@
     3. Custom Operations test 
 */
 int main(int argc, char* argv[]){
+    ieee_standard_check();
     if(argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <mode> [additional arguments]" << std::endl;
         std::cerr << "Modes:" << std::endl;

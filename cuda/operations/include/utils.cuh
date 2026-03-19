@@ -19,6 +19,7 @@ namespace utils{
     float MeasureError(const std::vector<float>& output1, const std::vector<float>& output2);
     bool validateResults(const std::vector<float>& output1, const std::vector<float>& output2, float tolerance);
     int nextPowerOfTwo(int n);
+    bool isPowerOfTwo(int n); 
     void checkcuComplexArray(cuComplex* data, int width, int height, const std::string& array_name);
     void writeCSV(
         const std::string& path_to_file_with_filename, 
