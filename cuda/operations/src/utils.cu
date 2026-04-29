@@ -23,6 +23,10 @@ int utils::nextPowerOfTwo(int n){
     return 1 << count;
 }
 
+bool utils::isPowerOfTwo(int n){
+    return n > 0 && (n & (n-1) == 0);
+}
+
 /**
     @brief Measure the mean squared error between two float vectors.
     @param output1 The first output vector.
@@ -111,10 +115,18 @@ void utils::writeCSV(
 void utils::checkcuComplexArray(cuComplex* data, int width, int height, const std::string& array_name){
     std::vector<cuComplex> host_data(width * height);
     cudaMemcpy(host_data.data(), data, width * height * sizeof(cuComplex), cudaMemcpyDeviceToHost);
-    std::cout << "Contents of " << array_name << " :" << std::endl;
-    
-    // check dims 
-    std::cout << "Dimensions: " << height << " x " << width << std::endl; 
+    int precision = 3;
+    printf("\n--- Contents of %s (%dx%d) ---\n", array_name.c_str(), width, height);
+   
+    for (int i =0; i < height; ++i){
+        printf("Row %02d: ", i);
+        for (int j =0; j < width; ++j){
+            cuComplex curr_idx = data[i * width + j]; 
+            printf("[%.3f  + %.3fi]", precision+2, curr_idx.x, precision+2, curr_idx.y );
+        }
+        printf("\n");
+    }
+    printf("------------------------------\n\n");
 }
 
 void utils::saveOutputImage(

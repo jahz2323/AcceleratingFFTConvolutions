@@ -5,6 +5,7 @@
 #include <vector>
 #include <cuComplex.h>
 #include <cufft.h>
+#include <assert.h>
 
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -39,6 +40,7 @@ namespace cuda_operations {
                         void* input, void* filters, void* output);
 
    // Frequency Domain operations 
+   __global__ void scaleComplex(cuComplex* data, int n, float scale); 
    __global__ void _1D_DFT(int in_width, cuComplex* input, cuComplex* output);
    __global__ void _1D_IDFT(int in_width, cuComplex* input, cuComplex* output);
    __global__ void _1D_FFT(int width, int height, cuComplex* input, cuComplex* output);
@@ -53,15 +55,19 @@ namespace cuda_operations {
    __global__ void overlap_add_kernel(
       const cuComplex* workspace_block, 
       cuComplex* d_output_complex, 
-      int block_w, int block_h, 
+      int block_w, int block_h,
+      int valid_w, int valid_h,
+      int segment_w, int segment_h,
       int start_x, int start_y, 
       int out_w, int out_h
    );
    __global__ void tiling_and_extract_kernel(
       const cuComplex* d_input_complex, cuComplex* workspace_block, 
-      int in_w, int in_h, 
-      int start_x, int start_y, 
-      int block_w, int block_h
+      int block_w, int block_h,
+      int segment_w, int segment_h,
+      int valid_w, int valid_h,
+      int start_x, int start_y,
+      int in_w, int in_h
    );
    
    //__global__ void CutOffFrequency(int width, int height, cuComplex* input, cuComplex* output, float cutoff_freq);

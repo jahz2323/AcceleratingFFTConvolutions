@@ -46,7 +46,7 @@ public:
         int segment_h, segment_w;
         int num_blocks_h, num_blocks_w;
         int total_blocks;
-        static constexpr int num_streams = 4; // for OVA convolution, can be tuned based on GPU capabilities and block count
+        static constexpr int num_streams = 2; // for OVA convolution, can be tuned based on GPU capabilities and block count
         cudaStream_t streams[num_streams]; // array of CUDA streams for concurrent block processing in OVA convolution
         cuComplex* d_workspaces[num_streams]; // workspace for storing FFTs of blocks in OVA convolution
         cuComplex* d_scratches[num_streams];
